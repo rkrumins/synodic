@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Lock, User, AtSign, ChevronRight, AlertCircle, ShieldCheck, CheckCircle2, Sparkles } from 'lucide-react'
+import { Lock, User, AtSign, ChevronRight, AlertCircle, ShieldCheck, CheckCircle2, Sparkles, ShieldX } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '@/store/auth'
+import { useSignupEnabled } from '@/hooks/useSignupEnabled'
 import { cn } from '@/lib/utils'
 
 // Lazy-load zxcvbn to keep the initial bundle small
@@ -44,6 +45,8 @@ export function SignUpPage() {
 
     const navigate = useNavigate()
     const { signup, error, clearError, isLoading, isAuthenticated } = useAuthStore()
+    const signupEnabled = useSignupEnabled()
+    const signupAllowed = signupEnabled || !!inviteToken
 
     // If already authenticated, redirect to homepage
     useEffect(() => {
@@ -154,6 +157,36 @@ export function SignUpPage() {
                         </motion.div>
                     )}
 
+                    {/* Signup disabled (no invite token) */}
+                    {signupEnabled === null ? (
+                        /* Loading state — waiting for signup-status response */
+                        <div className="flex justify-center py-8">
+                            <div className="w-6 h-6 border-2 border-accent-lineage border-t-transparent rounded-full animate-spin" />
+                        </div>
+                    ) : !signupAllowed ? (
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95 }}
+                            animate={{ opacity: 1, scale: 1 }}
+                            className="text-center space-y-4"
+                        >
+                            <div className="w-16 h-16 mx-auto rounded-full bg-amber-500/10 flex items-center justify-center">
+                                <ShieldX className="w-8 h-8 text-amber-500" />
+                            </div>
+                            <div className="space-y-2">
+                                <p className="text-sm font-semibold text-ink">Registration is currently closed</p>
+                                <p className="text-xs text-ink-muted leading-relaxed">
+                                    Self-registration is disabled. Contact your administrator for an invite link to create an account.
+                                </p>
+                            </div>
+                            <Link
+                                to="/login"
+                                className="inline-flex items-center gap-2 text-sm font-semibold text-accent-lineage hover:underline"
+                            >
+                                Back to sign in
+                            </Link>
+                        </motion.div>
+                    ) : (
+                    <>
                     {/* Success State */}
                     <AnimatePresence mode="wait">
                         {successMessage ? (
@@ -364,6 +397,8 @@ export function SignUpPage() {
                             </form>
                         )}
                     </AnimatePresence>
+                    </>
+                    )}
                 </div>
 
                 {/* Subtle Decorative Bottom Info */}

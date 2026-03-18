@@ -7,7 +7,7 @@ import json
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.config.features import (
@@ -78,17 +78,17 @@ SEED_DEFINITIONS: list[dict[str, Any]] = [
     {
         "key": "signupEnabled",
         "name": "Signup",
-        "description": "Allow new users to create an account from the login page (self-registration).",
+        "description": "Allow new users to create an account from the login page (self-registration). Invite links bypass this setting.",
         "category_id": "auth",
         "type": "boolean",
         "default_value": json.dumps(False),
         "user_overridable": False,
         "options": None,
         "help_url": None,
-        "admin_hint": None,
+        "admin_hint": "When disabled, only users with an admin-generated invite link can register.",
         "sort_order": 2,
         "deprecated": False,
-        "implemented": False,
+        "implemented": True,
     },
     {
         "key": "traceEnabled",
@@ -109,10 +109,17 @@ SEED_DEFINITIONS: list[dict[str, Any]] = [
 
 
 async def seed_feature_registry(session: AsyncSession) -> None:
-    """Insert default categories and definitions if tables are empty. Idempotent."""
+    """Insert default categories and definitions if tables are empty, or sync implemented flags."""
     r = await session.execute(select(FeatureCategoryORM).limit(1))
     if r.scalar_one_or_none() is not None:
-        logger.debug("Feature categories already seeded; skipping.")
+        logger.debug("Feature categories already seeded; syncing implemented flags.")
+        # Sync implemented flags for existing definitions (handles code changes)
+        for d in SEED_DEFINITIONS:
+            await session.execute(
+                update(FeatureDefinitionORM)
+                .where(FeatureDefinitionORM.key == d["key"])
+                .values(implemented=d.get("implemented", False))
+            )
         return
 
     for c in SEED_CATEGORIES:

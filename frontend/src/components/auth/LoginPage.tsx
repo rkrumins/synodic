@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Lock, AtSign, ChevronRight, AlertCircle, ShieldCheck } from 'lucide-react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/auth'
+import { useSignupEnabled } from '@/hooks/useSignupEnabled'
 import { cn } from '@/lib/utils'
 
 export function LoginPage() {
@@ -11,6 +12,7 @@ export function LoginPage() {
     const navigate = useNavigate()
 
     const { login, error, clearError, isLoading, isAuthenticated } = useAuthStore()
+    const signupEnabled = useSignupEnabled()
 
     // If already authenticated, redirect to dashboard
     useEffect(() => {
@@ -165,12 +167,14 @@ export function LoginPage() {
                                 Forgot your password?
                             </Link>
                         </p>
-                        <p className="text-xs text-ink-muted">
-                            Don't have an account?{' '}
-                            <Link to="/signup" className="text-accent-lineage font-semibold hover:underline">
-                                Sign up
-                            </Link>
-                        </p>
+                        {signupEnabled && (
+                            <p className="text-xs text-ink-muted">
+                                Don't have an account?{' '}
+                                <Link to="/signup" className="text-accent-lineage font-semibold hover:underline">
+                                    Sign up
+                                </Link>
+                            </p>
+                        )}
                     </div>
                 </div>
 

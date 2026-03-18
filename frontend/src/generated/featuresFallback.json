@@ -55,17 +55,17 @@
     {
       "key": "signupEnabled",
       "name": "Signup",
-      "description": "Allow new users to create an account from the login page (self-registration).",
+      "description": "Allow new users to create an account from the login page (self-registration). Invite links bypass this setting.",
       "category": "auth",
       "type": "boolean",
       "default": false,
       "userOverridable": false,
       "options": null,
       "helpUrl": null,
-      "adminHint": null,
+      "adminHint": "When disabled, only users with an admin-generated invite link can register.",
       "sortOrder": 2,
       "deprecated": false,
-      "implemented": false
+      "implemented": true
     },
     {
       "key": "traceEnabled",

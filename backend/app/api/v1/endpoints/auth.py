@@ -5,6 +5,7 @@ POST /api/v1/auth/signup            → 201 + message
 POST /api/v1/auth/login             → 200 + LoginResponse (JWT + user)
 POST /api/v1/auth/forgot-password   → 200 + message (always succeeds)
 POST /api/v1/auth/reset-password    → 200 + message
+GET  /api/v1/auth/signup-status     → 200 + { signupEnabled: bool }
 """
 import logging
 
@@ -16,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth.password import hash_password, verify_password
 from backend.app.auth.jwt import create_access_token
 from backend.app.db.engine import get_db_session
-from backend.app.db.repositories import user_repo, invite_repo
+from backend.app.db.repositories import user_repo, invite_repo, feature_flags_repo
 from backend.common.models.auth import (
     SignUpRequest,
     SignUpResponse,
@@ -87,6 +88,25 @@ async def _build_user_response(session: AsyncSession, user) -> UserPublicRespons
     )
 
 
+# ── helpers (feature flags) ────────────────────────────────────────────
+
+async def _is_signup_enabled(session: AsyncSession) -> bool:
+    """Read the signupEnabled feature flag. Defaults to False when unset."""
+    values, _, _ = await feature_flags_repo.get_feature_flags(session, include_deprecated=False)
+    return bool(values.get("signupEnabled", False))
+
+
+# ── GET /auth/signup-status ──────────────────────────────────────────
+
+@router.get("/signup-status")
+async def signup_status(
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Public endpoint: is self-registration enabled?"""
+    enabled = await _is_signup_enabled(session)
+    return {"signupEnabled": enabled}
+
+
 # ── POST /auth/signup ─────────────────────────────────────────────────
 
 @router.post("/signup", response_model=SignUpResponse, status_code=status.HTTP_201_CREATED)
@@ -96,6 +116,14 @@ async def signup(
     body: SignUpRequest,
     session: AsyncSession = Depends(get_db_session),
 ):
+    # 0. Check feature flag — invite links bypass the gate
+    if not body.invite_token:
+        if not await _is_signup_enabled(session):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Self-registration is currently disabled. Contact your administrator for an invite link.",
+            )
+
     # 1. Password strength
     _check_password_strength(body.password)
 

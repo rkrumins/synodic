@@ -93,4 +93,8 @@ export const authService = {
             body: JSON.stringify({ token, newPassword }),
         })
     },
+
+    getSignupStatus(): Promise<{ signupEnabled: boolean }> {
+        return request<{ signupEnabled: boolean }>(`${AUTH_API}/signup-status`)
+    },
 }
