@@ -14,9 +14,9 @@ import {
     Users, CheckCircle2, XCircle, Clock, Shield, AlertCircle,
     RefreshCw, Search, UserPlus, Ban, X, Loader2, Mail,
     ChevronDown, ChevronUp, KeyRound, Eye, UserCog,
-    RotateCcw, Lock, Copy, Check,
+    RotateCcw, Lock, Copy, Check, Link2, ShieldOff, Sparkles, Trash2,
 } from 'lucide-react'
-import { adminUserService, type AdminUserResponse } from '@/services/adminUserService'
+import { adminUserService, type AdminUserResponse, type InviteTokenResponse, type InviteTokenListItem } from '@/services/adminUserService'
 import { cn } from '@/lib/utils'
 
 // ── Types & constants ────────────────────────────────────────────────
@@ -29,6 +29,7 @@ type ModalType =
     | { kind: 'role'; userId: string; name: string; currentRole: string }
     | { kind: 'suspend'; userId: string; name: string }
     | { kind: 'resetPassword'; userId: string; name: string }
+    | { kind: 'invite' }
     | null
 
 const STATUS_TABS: { value: StatusFilter; label: string; icon: typeof Clock }[] = [
@@ -165,9 +166,18 @@ export function AdminUsers() {
     // Reset token display
     const [generatedToken, setGeneratedToken] = useState<{ token: string; expiresAt: string } | null>(null)
     const [tokenCopied, setTokenCopied] = useState(false)
+    const [linkCopied, setLinkCopied] = useState(false)
 
     // Reset password mode: 'direct' or 'token'
     const [resetMode, setResetMode] = useState<'direct' | 'token'>('token')
+
+    // Invite state
+    const [inviteRole, setInviteRole] = useState('user')
+    const [inviteEmail, setInviteEmail] = useState('')
+    const [inviteLabel, setInviteLabel] = useState('')
+    const [generatedInvite, setGeneratedInvite] = useState<InviteTokenResponse | null>(null)
+    const [inviteLinkCopied, setInviteLinkCopied] = useState(false)
+    const [invites, setInvites] = useState<InviteTokenListItem[]>([])
 
     // ── Data fetching ────────────────────────────────────────────────
 
@@ -308,6 +318,67 @@ export function AdminUsers() {
         setTimeout(() => setTokenCopied(false), 2000)
     }
 
+    const handleCopyInviteLink = async () => {
+        if (!generatedToken) return
+        const baseUrl = window.location.origin
+        const link = `${baseUrl}/reset-password?token=${encodeURIComponent(generatedToken.token)}`
+        await navigator.clipboard.writeText(link)
+        setLinkCopied(true)
+        setTimeout(() => setLinkCopied(false), 2000)
+    }
+
+    const handleRevokeToken = async (userId: string) => {
+        await withAction(userId, () =>
+            adminUserService.revokeResetToken(userId), 'Reset token revoked')
+    }
+
+    // ── Invite handlers ───────────────────────────────────────────────
+
+    const fetchInvites = useCallback(async () => {
+        try {
+            const data = await adminUserService.listInvites(true)
+            setInvites(data)
+        } catch { /* silent */ }
+    }, [])
+
+    const handleCreateInvite = async () => {
+        setActionLoading('invite')
+        setError(null)
+        try {
+            const resp = await adminUserService.createInvite({
+                role: inviteRole,
+                email: inviteEmail || undefined,
+                label: inviteLabel || undefined,
+            })
+            setGeneratedInvite(resp)
+            setSuccessMsg('Invite link created')
+            await fetchInvites()
+        } catch (err: any) {
+            setError(err.message)
+        } finally {
+            setActionLoading(null)
+        }
+    }
+
+    const handleCopyInviteSignupLink = async () => {
+        if (!generatedInvite) return
+        const link = `${window.location.origin}/signup?invite=${encodeURIComponent(generatedInvite.inviteToken)}`
+        await navigator.clipboard.writeText(link)
+        setInviteLinkCopied(true)
+        setTimeout(() => setInviteLinkCopied(false), 2000)
+    }
+
+    const handleRevokeInvite = async (inviteId: string) => {
+        setError(null)
+        try {
+            await adminUserService.revokeInvite(inviteId)
+            setSuccessMsg('Invite revoked')
+            await fetchInvites()
+        } catch (err: any) {
+            setError(err.message)
+        }
+    }
+
     const handleSort = (field: SortField) => {
         if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc')
         else { setSortField(field); setSortDir('asc') }
@@ -319,7 +390,13 @@ export function AdminUsers() {
         setSelectedRole('')
         setGeneratedToken(null)
         setTokenCopied(false)
+        setLinkCopied(false)
         setResetMode('token')
+        setGeneratedInvite(null)
+        setInviteRole('user')
+        setInviteEmail('')
+        setInviteLabel('')
+        setInviteLinkCopied(false)
     }
 
     const openRoleModal = (user: AdminUserResponse) => {
@@ -363,14 +440,25 @@ export function AdminUsers() {
                         </p>
                     </div>
                 </div>
-                <button
-                    onClick={fetchUsers}
-                    disabled={loading}
-                    className="px-4 py-2 border border-glass-border bg-canvas-elevated hover:bg-black/5 dark:hover:bg-white/5 rounded-xl font-medium text-sm text-ink transition-colors flex items-center gap-2 disabled:opacity-50"
-                >
-                    <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-                    Refresh
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={() => { setModal({ kind: 'invite' }); fetchInvites() }}
+                        title="Generate a pre-approved signup link"
+                        className="px-4 py-2 rounded-xl bg-accent-lineage text-white font-medium text-sm shadow-sm shadow-accent-lineage/20 hover:brightness-110 transition-all flex items-center gap-2 active:scale-[0.98]"
+                    >
+                        <Sparkles className="w-4 h-4" />
+                        Invite User
+                    </button>
+                    <button
+                        onClick={fetchUsers}
+                        disabled={loading}
+                        title="Refresh user list"
+                        className="px-4 py-2 border border-glass-border bg-canvas-elevated hover:bg-black/5 dark:hover:bg-white/5 rounded-xl font-medium text-sm text-ink transition-colors flex items-center gap-2 disabled:opacity-50"
+                    >
+                        <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+                        Refresh
+                    </button>
+                </div>
             </div>
 
             {/* KPI Cards */}
@@ -418,6 +506,7 @@ export function AdminUsers() {
                             </p>
                         </div>
                         <button onClick={() => setFilter('pending')}
+                            title="View pending approvals"
                             className="px-3 py-1.5 rounded-lg bg-amber-500 text-white text-xs font-semibold hover:bg-amber-600 transition-colors shrink-0">
                             Review Now
                         </button>
@@ -461,7 +550,7 @@ export function AdminUsers() {
                     >
                         <CheckCircle2 className="w-4 h-4 shrink-0" />
                         <p className="flex-1">{successMsg}</p>
-                        <button onClick={() => setSuccessMsg(null)} className="p-1 rounded-lg hover:bg-emerald-500/10 transition-colors">
+                        <button onClick={() => setSuccessMsg(null)} title="Dismiss" className="p-1 rounded-lg hover:bg-emerald-500/10 transition-colors">
                             <X className="w-3.5 h-3.5" />
                         </button>
                     </motion.div>
@@ -477,6 +566,7 @@ export function AdminUsers() {
                         const count = tabCounts[tab.value]
                         return (
                             <button key={tab.value} onClick={() => setFilter(tab.value)}
+                                title={`Filter by ${tab.label.toLowerCase()}`}
                                 className={cn(
                                     "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all",
                                     isActive ? "bg-white dark:bg-white/10 text-ink shadow-sm" : "text-ink-muted hover:text-ink"
@@ -500,6 +590,7 @@ export function AdminUsers() {
                         className="input pl-9 h-9 text-sm bg-white/50 dark:bg-black/20 w-full" />
                     {search && (
                         <button onClick={() => setSearch('')}
+                            title="Clear search"
                             className="absolute right-3 top-1/2 -translate-y-1/2 text-ink-muted hover:text-ink transition-colors">
                             <X className="w-3.5 h-3.5" />
                         </button>
@@ -515,7 +606,7 @@ export function AdminUsers() {
                         className="flex items-center gap-2 p-3 mb-4 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 text-sm">
                         <AlertCircle className="w-4 h-4 shrink-0" />
                         <p className="flex-1">{error}</p>
-                        <button onClick={() => setError(null)} className="p-1 rounded-lg hover:bg-red-500/10 transition-colors">
+                        <button onClick={() => setError(null)} title="Dismiss" className="p-1 rounded-lg hover:bg-red-500/10 transition-colors">
                             <X className="w-3.5 h-3.5" />
                         </button>
                     </motion.div>
@@ -627,7 +718,7 @@ export function AdminUsers() {
                                                 {user.status === 'pending' && (
                                                     <>
                                                         <button onClick={() => handleApprove(user.id)} disabled={isActing}
-                                                            title="Approve"
+                                                            title="Approve this account and grant access"
                                                             className={cn(
                                                                 "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all",
                                                                 "bg-emerald-500 text-white shadow-sm shadow-emerald-500/20",
@@ -637,7 +728,7 @@ export function AdminUsers() {
                                                             Approve
                                                         </button>
                                                         <button onClick={() => setModal({ kind: 'reject', userId: user.id, name: user.displayName })}
-                                                            disabled={isActing} title="Reject"
+                                                            disabled={isActing} title="Reject this account request"
                                                             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/20 hover:bg-red-500/20 active:scale-[0.98] disabled:opacity-50 transition-all">
                                                             <XCircle className="w-3.5 h-3.5" />
                                                             Reject
@@ -650,14 +741,14 @@ export function AdminUsers() {
                                                     <>
                                                         {/* Change role (not for self — backend guards this too) */}
                                                         <button onClick={() => openRoleModal(user)} disabled={isActing}
-                                                            title="Change role"
+                                                            title="Change this user's role (admin, user, or viewer)"
                                                             className="p-2 rounded-lg text-ink-muted hover:text-ink hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-50">
                                                             <UserCog className="w-4 h-4" />
                                                         </button>
 
                                                         {/* Reset password */}
                                                         <button onClick={() => setModal({ kind: 'resetPassword', userId: user.id, name: user.displayName })}
-                                                            disabled={isActing} title="Reset password"
+                                                            disabled={isActing} title="Reset this user's password or generate a reset link"
                                                             className={cn(
                                                                 "p-2 rounded-lg transition-colors disabled:opacity-50",
                                                                 user.resetRequested
@@ -667,17 +758,26 @@ export function AdminUsers() {
                                                             <KeyRound className="w-4 h-4" />
                                                         </button>
 
+                                                        {/* Revoke pending reset */}
+                                                        {user.resetRequested && (
+                                                            <button onClick={() => handleRevokeToken(user.id)}
+                                                                disabled={isActing} title="Revoke the pending password reset token"
+                                                                className="p-2 rounded-lg text-red-500/70 hover:text-red-500 hover:bg-red-500/5 transition-colors disabled:opacity-50">
+                                                                <ShieldOff className="w-4 h-4" />
+                                                            </button>
+                                                        )}
+
                                                         {/* Suspend / Reactivate */}
                                                         {user.status === 'active' && (
                                                             <button onClick={() => setModal({ kind: 'suspend', userId: user.id, name: user.displayName })}
-                                                                disabled={isActing} title="Suspend user"
+                                                                disabled={isActing} title="Suspend this user and revoke access"
                                                                 className="p-2 rounded-lg text-ink-muted hover:text-red-500 hover:bg-red-500/5 transition-colors disabled:opacity-50">
                                                                 <Ban className="w-4 h-4" />
                                                             </button>
                                                         )}
                                                         {user.status === 'suspended' && (
                                                             <button onClick={() => handleReactivate(user.id)}
-                                                                disabled={isActing} title="Reactivate user"
+                                                                disabled={isActing} title="Reactivate this user and restore access"
                                                                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 active:scale-[0.98] disabled:opacity-50 transition-all">
                                                                 {isActing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RotateCcw className="w-3.5 h-3.5" />}
                                                                 Reactivate
@@ -703,6 +803,7 @@ export function AdminUsers() {
                         </p>
                         {(search || filter !== 'all') && (
                             <button onClick={() => { setSearch(''); setFilter('all') }}
+                                title="Clear all filters and search"
                                 className="text-xs font-medium text-accent-lineage hover:underline">Clear filters</button>
                         )}
                     </div>
@@ -767,6 +868,7 @@ export function AdminUsers() {
                                             const isSelected = selectedRole === r.value
                                             return (
                                                 <button key={r.value} onClick={() => setSelectedRole(r.value)}
+                                                    title={`Select ${r.label} role`}
                                                     className={cn(
                                                         "w-full flex items-center gap-3 p-3 rounded-xl border transition-all text-left",
                                                         isSelected
@@ -807,26 +909,52 @@ export function AdminUsers() {
                                     {/* If we have a generated token, show it */}
                                     {generatedToken ? (
                                         <div className="space-y-4 mb-5">
+                                            {/* Token value */}
                                             <div className="p-4 rounded-xl bg-sky-500/5 border border-sky-500/20">
                                                 <p className="text-xs font-semibold uppercase tracking-wider text-sky-600 dark:text-sky-400 mb-2">Reset Token</p>
                                                 <div className="flex items-center gap-2">
                                                     <code className="flex-1 text-xs font-mono bg-black/5 dark:bg-white/5 px-3 py-2 rounded-lg break-all text-ink select-all">
                                                         {generatedToken.token}
                                                     </code>
-                                                    <button onClick={handleCopyToken}
+                                                    <button onClick={handleCopyToken} title="Copy token"
                                                         className="p-2 rounded-lg bg-sky-500/10 text-sky-600 hover:bg-sky-500/20 transition-colors shrink-0">
                                                         {tokenCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
                                                     </button>
                                                 </div>
                                                 <p className="text-[11px] text-ink-muted mt-2">
-                                                    Expires: {formatDate(generatedToken.expiresAt)}. Share this token with the user.
-                                                </p>
-                                                <p className="text-[11px] text-ink-muted mt-1">
-                                                    The user should visit <span className="font-mono text-sky-600 dark:text-sky-400">/reset-password</span> and enter this token.
+                                                    Expires: {formatDate(generatedToken.expiresAt)}
                                                 </p>
                                             </div>
-                                            <div className="flex justify-end">
+
+                                            {/* Invite link */}
+                                            <div className="p-4 rounded-xl bg-indigo-500/5 border border-indigo-500/20">
+                                                <p className="text-xs font-semibold uppercase tracking-wider text-indigo-600 dark:text-indigo-400 mb-2">
+                                                    Invite Link
+                                                </p>
+                                                <div className="flex items-center gap-2">
+                                                    <code className="flex-1 text-xs font-mono bg-black/5 dark:bg-white/5 px-3 py-2 rounded-lg break-all text-ink select-all">
+                                                        {`${window.location.origin}/reset-password?token=${encodeURIComponent(generatedToken.token)}`}
+                                                    </code>
+                                                    <button onClick={handleCopyInviteLink} title="Copy invite link"
+                                                        className="p-2 rounded-lg bg-indigo-500/10 text-indigo-600 hover:bg-indigo-500/20 transition-colors shrink-0">
+                                                        {linkCopied ? <Check className="w-4 h-4" /> : <Link2 className="w-4 h-4" />}
+                                                    </button>
+                                                </div>
+                                                <p className="text-[11px] text-ink-muted mt-2">
+                                                    Send this link directly to the user — the token is pre-filled so they just set a new password.
+                                                </p>
+                                            </div>
+
+                                            {/* Actions row */}
+                                            <div className="flex items-center justify-between">
+                                                <button onClick={() => { handleRevokeToken(modal.userId); closeModal() }}
+                                                    title="Invalidate this reset token"
+                                                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-red-600 dark:text-red-400 border border-red-500/20 bg-red-500/5 hover:bg-red-500/10 transition-colors">
+                                                    <ShieldOff className="w-3.5 h-3.5" />
+                                                    Revoke Token
+                                                </button>
                                                 <button onClick={closeModal}
+                                                    title="Close dialog"
                                                     className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-accent-lineage text-white hover:brightness-110 transition-all">
                                                     Done
                                                 </button>
@@ -837,6 +965,7 @@ export function AdminUsers() {
                                             {/* Mode toggle */}
                                             <div className="flex gap-2 mb-4">
                                                 <button onClick={() => setResetMode('token')}
+                                                    title="Generate a shareable reset token"
                                                     className={cn(
                                                         "flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all",
                                                         resetMode === 'token'
@@ -847,6 +976,7 @@ export function AdminUsers() {
                                                     Generate Token
                                                 </button>
                                                 <button onClick={() => setResetMode('direct')}
+                                                    title="Set a new password directly"
                                                     className={cn(
                                                         "flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-semibold border transition-all",
                                                         resetMode === 'direct'
@@ -894,6 +1024,132 @@ export function AdminUsers() {
                                     )}
                                 </>
                             )}
+
+                            {/* ── Invite modal ── */}
+                            {modal.kind === 'invite' && (
+                                <>
+                                    <ModalHeader icon={Sparkles} iconBg="bg-accent-lineage/10 border-accent-lineage/20" iconColor="text-accent-lineage"
+                                        title="Invite User" subtitle="Generate a pre-approved signup link" onClose={closeModal} />
+
+                                    {generatedInvite ? (
+                                        <div className="space-y-4 mb-5">
+                                            {/* Invite link */}
+                                            <div className="p-4 rounded-xl bg-accent-lineage/5 border border-accent-lineage/20">
+                                                <p className="text-xs font-semibold uppercase tracking-wider text-accent-lineage mb-2">
+                                                    Invite Link
+                                                </p>
+                                                <div className="flex items-center gap-2">
+                                                    <code className="flex-1 text-xs font-mono bg-black/5 dark:bg-white/5 px-3 py-2 rounded-lg break-all text-ink select-all">
+                                                        {`${window.location.origin}/signup?invite=${encodeURIComponent(generatedInvite.inviteToken)}`}
+                                                    </code>
+                                                    <button onClick={handleCopyInviteSignupLink} title="Copy invite link"
+                                                        className="p-2 rounded-lg bg-accent-lineage/10 text-accent-lineage hover:bg-accent-lineage/20 transition-colors shrink-0">
+                                                        {inviteLinkCopied ? <Check className="w-4 h-4" /> : <Link2 className="w-4 h-4" />}
+                                                    </button>
+                                                </div>
+                                                <div className="flex items-center gap-3 mt-2 text-[11px] text-ink-muted">
+                                                    <span>Role: <strong className="text-ink-secondary capitalize">{generatedInvite.role}</strong></span>
+                                                    <span>&middot;</span>
+                                                    <span>Expires: {new Date(generatedInvite.expiresAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                                                    {generatedInvite.email && (
+                                                        <><span>&middot;</span><span>Restricted to: {generatedInvite.email}</span></>
+                                                    )}
+                                                </div>
+                                                <p className="text-[11px] text-ink-muted mt-2">
+                                                    Send this link to the user. Their account will be <strong className="text-emerald-600 dark:text-emerald-400">activated instantly</strong> upon signup.
+                                                </p>
+                                            </div>
+
+                                            <div className="flex justify-end">
+                                                <button onClick={closeModal}
+                                                    title="Close dialog"
+                                                    className="px-4 py-2.5 rounded-xl text-sm font-semibold bg-accent-lineage text-white hover:brightness-110 transition-all">
+                                                    Done
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <>
+                                            <div className="space-y-4 mb-5">
+                                                {/* Role selection */}
+                                                <div className="space-y-2">
+                                                    <label className="text-xs font-semibold uppercase tracking-wider text-ink-muted">Role</label>
+                                                    <div className="flex gap-2">
+                                                        {AVAILABLE_ROLES.map(r => {
+                                                            const RIcon = r.icon
+                                                            const isSelected = inviteRole === r.value
+                                                            return (
+                                                                <button key={r.value} onClick={() => setInviteRole(r.value)}
+                                                                    title={`Select ${r.label} role`}
+                                                                    className={cn(
+                                                                        "flex-1 flex items-center justify-center gap-1.5 px-2 py-2 rounded-xl text-xs font-semibold border transition-all",
+                                                                        isSelected
+                                                                            ? "border-accent-lineage bg-accent-lineage/5 text-accent-lineage"
+                                                                            : "border-glass-border text-ink-muted hover:text-ink"
+                                                                    )}>
+                                                                    <RIcon className="w-3.5 h-3.5" />
+                                                                    {r.label}
+                                                                </button>
+                                                            )
+                                                        })}
+                                                    </div>
+                                                </div>
+
+                                                {/* Email restriction (optional) */}
+                                                <div className="space-y-1.5">
+                                                    <label className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
+                                                        Email <span className="normal-case font-normal">(optional — restrict to specific email)</span>
+                                                    </label>
+                                                    <input type="email" placeholder="user@company.com"
+                                                        value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)}
+                                                        className="input h-10 w-full text-sm" />
+                                                </div>
+
+                                                {/* Label (optional) */}
+                                                <div className="space-y-1.5">
+                                                    <label className="text-xs font-semibold uppercase tracking-wider text-ink-muted">
+                                                        Note <span className="normal-case font-normal">(optional — visible only to admins)</span>
+                                                    </label>
+                                                    <input type="text" placeholder="e.g. For John from Marketing"
+                                                        value={inviteLabel} onChange={(e) => setInviteLabel(e.target.value)}
+                                                        className="input h-10 w-full text-sm" />
+                                                </div>
+                                            </div>
+
+                                            {/* Existing invites */}
+                                            {invites.length > 0 && (
+                                                <div className="mb-5">
+                                                    <p className="text-xs font-semibold uppercase tracking-wider text-ink-muted mb-2">Active Invites</p>
+                                                    <div className="border border-glass-border rounded-xl overflow-hidden divide-y divide-glass-border max-h-40 overflow-y-auto">
+                                                        {invites.filter(i => i.isActive).map(inv => (
+                                                            <div key={inv.id} className="flex items-center justify-between px-3 py-2 text-xs">
+                                                                <div className="min-w-0 flex-1">
+                                                                    <span className="font-medium text-ink">{inv.label || inv.email || 'General invite'}</span>
+                                                                    <span className="text-ink-muted ml-2 capitalize">({inv.role})</span>
+                                                                    <span className="text-ink-muted ml-2">{inv.useCount}/{inv.maxUses} used</span>
+                                                                </div>
+                                                                <button onClick={() => handleRevokeInvite(inv.id)}
+                                                                    title="Revoke invite"
+                                                                    className="p-1 rounded-lg text-red-500/60 hover:text-red-500 hover:bg-red-500/5 transition-colors shrink-0 ml-2">
+                                                                    <Trash2 className="w-3.5 h-3.5" />
+                                                                </button>
+                                                            </div>
+                                                        ))}
+                                                        {invites.filter(i => i.isActive).length === 0 && (
+                                                            <p className="px-3 py-2 text-xs text-ink-muted">No active invites</p>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            <ModalFooter onCancel={closeModal} onConfirm={handleCreateInvite}
+                                                confirmLabel="Generate Invite Link" confirmIcon={Link2}
+                                                confirmClass="bg-accent-lineage hover:brightness-110 shadow-accent-lineage/20"
+                                                loading={actionLoading === 'invite'} />
+                                        </>
+                                    )}
+                                </>
+                            )}
                         </motion.div>
                     </motion.div>
                 )}
@@ -918,7 +1174,7 @@ function ModalHeader({ icon: Icon, iconBg, iconColor, title, subtitle, onClose }
                     <p className="text-xs text-ink-muted">{subtitle}</p>
                 </div>
             </div>
-            <button onClick={onClose} className="p-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-ink-muted transition-colors">
+            <button onClick={onClose} title="Close" className="p-1 rounded-lg hover:bg-black/5 dark:hover:bg-white/5 text-ink-muted transition-colors">
                 <X className="w-4 h-4" />
             </button>
         </div>
@@ -945,11 +1201,11 @@ function ModalFooter({ onCancel, onConfirm, confirmLabel, confirmIcon: Icon, con
 }) {
     return (
         <div className="flex gap-3 justify-end">
-            <button onClick={onCancel}
+            <button onClick={onCancel} title="Cancel"
                 className="px-4 py-2.5 rounded-xl text-sm font-semibold text-ink-secondary border border-glass-border bg-canvas-elevated hover:bg-black/5 dark:hover:bg-white/5 transition-colors">
                 Cancel
             </button>
-            <button onClick={onConfirm} disabled={loading || disabled}
+            <button onClick={onConfirm} disabled={loading || disabled} title={confirmLabel}
                 className={cn(
                     "px-4 py-2.5 rounded-xl text-sm font-semibold text-white transition-all shadow-sm flex items-center gap-2",
                     "disabled:opacity-50 disabled:cursor-not-allowed",

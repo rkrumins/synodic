@@ -1,7 +1,7 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Lock, User, AtSign, ChevronRight, AlertCircle, ShieldCheck, CheckCircle2 } from 'lucide-react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Lock, User, AtSign, ChevronRight, AlertCircle, ShieldCheck, CheckCircle2, Sparkles } from 'lucide-react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { useAuthStore } from '@/store/auth'
 import { cn } from '@/lib/utils'
 
@@ -30,6 +30,9 @@ const STRENGTH_COLORS = ['bg-red-500', 'bg-orange-500', 'bg-amber-500', 'bg-yell
 const STRENGTH_LABELS = ['Very weak', 'Weak', 'Fair', 'Strong', 'Very strong']
 
 export function SignUpPage() {
+    const [searchParams] = useSearchParams()
+    const inviteToken = searchParams.get('invite') || ''
+
     const [firstName, setFirstName] = useState('')
     const [lastName, setLastName] = useState('')
     const [email, setEmail] = useState('')
@@ -75,7 +78,10 @@ export function SignUpPage() {
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault()
         if (!canSubmit) return
-        const result = await signup({ email, password, firstName, lastName })
+        const result = await signup({
+            email, password, firstName, lastName,
+            ...(inviteToken ? { inviteToken } : {}),
+        })
         if (result.ok) {
             setSuccessMessage(result.message)
         }
@@ -130,9 +136,23 @@ export function SignUpPage() {
                             Nexus<span className="gradient-text">Lineage</span>
                         </h1>
                         <p className="text-sm text-ink-secondary text-center">
-                            Create your account
+                            {inviteToken ? 'You\'ve been invited — create your account' : 'Create your account'}
                         </p>
                     </div>
+
+                    {/* Invite badge */}
+                    {inviteToken && !successMessage && (
+                        <motion.div
+                            initial={{ opacity: 0, y: -4 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="flex items-center gap-2 p-3 mb-5 rounded-xl bg-emerald-500/10 border border-emerald-500/20"
+                        >
+                            <Sparkles className="w-4 h-4 text-emerald-500 shrink-0" />
+                            <p className="text-xs text-emerald-700 dark:text-emerald-300">
+                                <span className="font-semibold">Invite link detected</span> — your account will be activated instantly.
+                            </p>
+                        </motion.div>
+                    )}
 
                     {/* Success State */}
                     <AnimatePresence mode="wait">
@@ -148,9 +168,18 @@ export function SignUpPage() {
                                 <p className="text-sm text-ink-secondary" role="status">{successMessage}</p>
                                 <Link
                                     to="/login"
-                                    className="inline-block text-sm font-semibold text-accent-lineage hover:underline"
+                                    className={cn(
+                                        "inline-flex items-center justify-center gap-2 mt-2 text-sm font-semibold transition-all",
+                                        inviteToken
+                                            ? "w-full h-12 rounded-xl bg-accent-lineage text-white shadow-lg shadow-accent-lineage/20 hover:brightness-110 active:scale-[0.98]"
+                                            : "text-accent-lineage hover:underline"
+                                    )}
                                 >
-                                    Back to sign in
+                                    {inviteToken ? (
+                                        <>Sign in now <ChevronRight className="w-4 h-4" /></>
+                                    ) : (
+                                        'Back to sign in'
+                                    )}
                                 </Link>
                             </motion.div>
                         ) : (

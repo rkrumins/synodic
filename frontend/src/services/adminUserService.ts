@@ -4,6 +4,7 @@
 import { authFetch } from './apiClient'
 
 const ADMIN_USERS_API = '/api/v1/admin/users'
+const ADMIN_INVITES_API = '/api/v1/admin/invites'
 
 export interface AdminUserResponse {
     id: string
@@ -21,6 +22,39 @@ export interface AdminUserResponse {
 export interface ResetTokenResponse {
     resetToken: string
     expiresAt: string
+}
+
+export interface CreateInviteRequest {
+    role?: string
+    email?: string
+    label?: string
+    maxUses?: number
+    expiryHours?: number
+}
+
+export interface InviteTokenResponse {
+    id: string
+    inviteToken: string
+    role: string
+    email: string | null
+    label: string | null
+    maxUses: number
+    useCount: number
+    expiresAt: string
+    createdAt: string
+}
+
+export interface InviteTokenListItem {
+    id: string
+    role: string
+    email: string | null
+    label: string | null
+    maxUses: number
+    useCount: number
+    expiresAt: string
+    revoked: boolean
+    createdAt: string
+    isActive: boolean
 }
 
 export const adminUserService = {
@@ -70,6 +104,32 @@ export const adminUserService = {
 
     generateResetToken(userId: string): Promise<ResetTokenResponse> {
         return authFetch<ResetTokenResponse>(`${ADMIN_USERS_API}/${userId}/generate-reset-token`, {
+            method: 'POST',
+        })
+    },
+
+    revokeResetToken(userId: string): Promise<{ detail: string }> {
+        return authFetch<{ detail: string }>(`${ADMIN_USERS_API}/${userId}/revoke-reset-token`, {
+            method: 'POST',
+        })
+    },
+
+    // ── Invite tokens ────────────────────────────────────────────────
+
+    createInvite(req: CreateInviteRequest): Promise<InviteTokenResponse> {
+        return authFetch<InviteTokenResponse>(ADMIN_INVITES_API, {
+            method: 'POST',
+            body: JSON.stringify(req),
+        })
+    },
+
+    listInvites(includeRevoked = false): Promise<InviteTokenListItem[]> {
+        const params = includeRevoked ? '?includeRevoked=true' : ''
+        return authFetch<InviteTokenListItem[]>(`${ADMIN_INVITES_API}${params}`)
+    },
+
+    revokeInvite(inviteId: string): Promise<{ detail: string }> {
+        return authFetch<{ detail: string }>(`${ADMIN_INVITES_API}/${inviteId}/revoke`, {
             method: 'POST',
         })
     },

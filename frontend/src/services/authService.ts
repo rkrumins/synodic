@@ -12,6 +12,7 @@ export interface SignUpRequest {
     password: string
     firstName: string
     lastName: string
+    inviteToken?: string
 }
 
 export interface LoginRequest {

@@ -22,6 +22,7 @@ class SignUpRequest(BaseModel):
     password: str = Field(min_length=8)
     first_name: str = Field(alias="firstName", min_length=1, max_length=100)
     last_name: str = Field(alias="lastName", min_length=1, max_length=100)
+    invite_token: Optional[str] = Field(None, alias="inviteToken")
 
     @field_validator("email")
     @classmethod
@@ -134,3 +135,65 @@ class ResetTokenResponse(BaseModel):
 
     reset_token: str = Field(alias="resetToken")
     expires_at: str = Field(alias="expiresAt")
+
+
+# ── Invite tokens ─────────────────────────────────────────────────────
+
+class CreateInviteRequest(BaseModel):
+    """Admin creates a signup invite token."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    role: str = Field(default="user", min_length=1, max_length=50)
+    email: Optional[str] = Field(None, description="Restrict invite to a specific email")
+    label: Optional[str] = Field(None, max_length=200, description="Admin-visible note")
+    max_uses: int = Field(default=1, alias="maxUses", ge=1, le=100)
+    expiry_hours: int = Field(default=72, alias="expiryHours", ge=1, le=720)
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, v: str) -> str:
+        allowed = {"admin", "user", "viewer"}
+        if v not in allowed:
+            raise ValueError(f"Role must be one of: {', '.join(sorted(allowed))}")
+        return v
+
+    @field_validator("email")
+    @classmethod
+    def validate_email(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = v.strip().lower()
+        if not _EMAIL_RE.match(v):
+            raise ValueError("Invalid email format")
+        return v
+
+
+class InviteTokenResponse(BaseModel):
+    """Returned to admin when they generate an invite token."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    invite_token: str = Field(alias="inviteToken")
+    role: str
+    email: Optional[str] = None
+    label: Optional[str] = None
+    max_uses: int = Field(alias="maxUses")
+    use_count: int = Field(alias="useCount")
+    expires_at: str = Field(alias="expiresAt")
+    created_at: str = Field(alias="createdAt")
+
+
+class InviteTokenListItem(BaseModel):
+    """Invite token info for the admin list (no raw token)."""
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    role: str
+    email: Optional[str] = None
+    label: Optional[str] = None
+    max_uses: int = Field(alias="maxUses")
+    use_count: int = Field(alias="useCount")
+    expires_at: str = Field(alias="expiresAt")
+    revoked: bool
+    created_at: str = Field(alias="createdAt")
+    is_active: bool = Field(alias="isActive")

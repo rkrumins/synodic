@@ -15,6 +15,7 @@ Admin:
     POST  /api/v1/admin/users/{user_id}/generate-reset-token
 """
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -30,9 +31,13 @@ from backend.common.models.auth import (
     AdminResetPasswordRequest,
     ApproveRejectRequest,
     ChangeRoleRequest,
+    CreateInviteRequest,
+    InviteTokenResponse,
+    InviteTokenListItem,
     ResetTokenResponse,
     UserPublicResponse,
 )
+from backend.app.db.repositories import invite_repo
 
 logger = logging.getLogger(__name__)
 
@@ -310,3 +315,123 @@ async def generate_reset_token(
 
     logger.info("Reset token generated for user %s by admin %s", user_id, admin.id)
     return ResetTokenResponse(resetToken=raw_token, expiresAt=expires_at)
+
+
+# ── Revoke reset token ──────────────────────────────────────────────
+
+@admin_router.post("/{user_id}/revoke-reset-token", status_code=status.HTTP_200_OK)
+async def revoke_reset_token(
+    user_id: str,
+    admin=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Revoke any pending reset token / request for a user."""
+    user = await user_repo.get_user_by_id(session, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    await user_repo.clear_reset_token(session, user_id)
+
+    await user_repo.create_outbox_event(
+        session,
+        event_type="user.reset_token_revoked",
+        payload={"user_id": user_id, "revoked_by": admin.id},
+    )
+
+    logger.info("Reset token revoked for user %s by admin %s", user_id, admin.id)
+    return {"detail": "Reset token has been revoked"}
+
+
+# ── Invite tokens ────────────────────────────────────────────────────
+
+invite_router = APIRouter()
+
+
+@invite_router.post("", response_model=InviteTokenResponse, status_code=status.HTTP_201_CREATED)
+async def create_invite(
+    body: CreateInviteRequest,
+    admin=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Generate a signup invite token that pre-approves a new user."""
+    raw_token, invite = await invite_repo.create_invite_token(
+        session,
+        created_by=admin.id,
+        role=body.role,
+        email=body.email,
+        label=body.label,
+        max_uses=body.max_uses,
+        expiry_hours=body.expiry_hours,
+    )
+
+    await user_repo.create_outbox_event(
+        session,
+        event_type="invite.created",
+        payload={"invite_id": invite.id, "created_by": admin.id, "role": body.role},
+    )
+
+    logger.info("Invite token created by admin %s (role=%s)", admin.id, body.role)
+    return InviteTokenResponse(
+        id=invite.id,
+        inviteToken=raw_token,
+        role=invite.role,
+        email=invite.email,
+        label=invite.label,
+        maxUses=invite.max_uses,
+        useCount=invite.use_count,
+        expiresAt=invite.expires_at,
+        createdAt=invite.created_at,
+    )
+
+
+@invite_router.get("", response_model=list[InviteTokenListItem])
+async def list_invites(
+    include_revoked: bool = Query(False, alias="includeRevoked"),
+    admin=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """List all invite tokens."""
+    invites = await invite_repo.list_invite_tokens(session, include_revoked=include_revoked)
+    now = datetime.now(timezone.utc)
+    items = []
+    for inv in invites:
+        expires = datetime.fromisoformat(inv.expires_at)
+        is_active = (
+            not inv.revoked
+            and now <= expires
+            and inv.use_count < inv.max_uses
+        )
+        items.append(InviteTokenListItem(
+            id=inv.id,
+            role=inv.role,
+            email=inv.email,
+            label=inv.label,
+            maxUses=inv.max_uses,
+            useCount=inv.use_count,
+            expiresAt=inv.expires_at,
+            revoked=inv.revoked,
+            createdAt=inv.created_at,
+            isActive=is_active,
+        ))
+    return items
+
+
+@invite_router.post("/{invite_id}/revoke", status_code=status.HTTP_200_OK)
+async def revoke_invite(
+    invite_id: str,
+    admin=Depends(require_admin),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Revoke an invite token."""
+    invite = await invite_repo.revoke_invite_token(session, invite_id)
+    if invite is None:
+        raise HTTPException(status_code=404, detail="Invite token not found")
+
+    await user_repo.create_outbox_event(
+        session,
+        event_type="invite.revoked",
+        payload={"invite_id": invite_id, "revoked_by": admin.id},
+    )
+
+    logger.info("Invite %s revoked by admin %s", invite_id, admin.id)
+    return {"detail": "Invite token revoked"}

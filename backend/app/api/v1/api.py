@@ -17,6 +17,9 @@ api_router.include_router(
 api_router.include_router(
     users.admin_router, prefix="/admin/users", tags=["admin:users"],
 )
+api_router.include_router(
+    users.invite_router, prefix="/admin/invites", tags=["admin:invites"],
+)
 
 # ── Admin routers (workspace-centric) ───────────────────────────────
 api_router.include_router(

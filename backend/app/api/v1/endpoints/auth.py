@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.auth.password import hash_password, verify_password
 from backend.app.auth.jwt import create_access_token
 from backend.app.db.engine import get_db_session
-from backend.app.db.repositories import user_repo
+from backend.app.db.repositories import user_repo, invite_repo
 from backend.common.models.auth import (
     SignUpRequest,
     SignUpResponse,
@@ -99,38 +99,74 @@ async def signup(
     # 1. Password strength
     _check_password_strength(body.password)
 
-    # 2. Check email uniqueness — return the same 201 response regardless
+    # 2. Validate invite token (if provided)
+    invite = None
+    if body.invite_token:
+        invite = await invite_repo.verify_invite_token(
+            session, body.invite_token, email=body.email,
+        )
+        if invite is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid, expired, or already-used invite link.",
+            )
+
+    # 3. Check email uniqueness — return the same 201 response regardless
     # to prevent email enumeration attacks.
     existing = await user_repo.get_user_by_email(session, body.email)
     if existing is not None:
         logger.debug("Signup attempt with existing email (suppressed)")
-        return SignUpResponse(message="Account created. Awaiting administrator approval.")
+        return SignUpResponse(
+            message="Account created and activated. You can now sign in."
+            if invite else "Account created. Awaiting administrator approval.",
+        )
 
-    # 3. Hash password
+    # 4. Hash password
     hashed = hash_password(body.password)
 
-    # 4. Create user (status=pending)
+    # 5. Create user — auto-activate if invite token is valid
+    is_invited = invite is not None
     user = await user_repo.create_user(
         session,
         email=body.email,
         password_hash=hashed,
         first_name=body.first_name,
         last_name=body.last_name,
-        status="pending",
+        status="active" if is_invited else "pending",
     )
 
-    # 5. Create pending approval record
-    await user_repo.create_approval(session, user.id, status="pending")
-
-    # 6. Outbox event
-    await user_repo.create_outbox_event(
-        session,
-        event_type="user.created",
-        payload={"user_id": user.id, "email": user.email},
-    )
-
-    logger.info("User signed up: %s (pending approval)", user.id)
-    return SignUpResponse(message="Account created. Awaiting administrator approval.")
+    if is_invited:
+        # Assign the role specified by the invite
+        await user_repo.assign_role(session, user.id, invite.role)
+        # Mark approval as auto-approved via invite
+        await user_repo.create_approval(
+            session, user.id, status="approved",
+            approved_by=invite.created_by,
+            rejection_reason=None,
+        )
+        # Consume the invite token (increment use_count)
+        await invite_repo.consume_invite_token(session, invite.id)
+        # Outbox event
+        await user_repo.create_outbox_event(
+            session,
+            event_type="user.created_via_invite",
+            payload={
+                "user_id": user.id, "email": user.email,
+                "invite_id": invite.id, "role": invite.role,
+            },
+        )
+        logger.info("User %s signed up via invite (auto-activated, role=%s)", user.id, invite.role)
+        return SignUpResponse(message="Account created and activated. You can now sign in.")
+    else:
+        # Standard flow — pending approval
+        await user_repo.create_approval(session, user.id, status="pending")
+        await user_repo.create_outbox_event(
+            session,
+            event_type="user.created",
+            payload={"user_id": user.id, "email": user.email},
+        )
+        logger.info("User signed up: %s (pending approval)", user.id)
+        return SignUpResponse(message="Account created. Awaiting administrator approval.")
 
 
 # ── POST /auth/login ──────────────────────────────────────────────────
