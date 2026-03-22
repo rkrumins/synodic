@@ -18,11 +18,10 @@ import {
 } from '@/services/ontologyDefinitionService'
 import { workspaceService } from '@/services/workspaceService'
 import { useWorkspacesStore } from '@/store/workspaces'
-import { useInvalidateGraphSchema } from '@/hooks/useGraphSchema'
-import { useGraphProvider } from '@/providers/GraphProviderContext'
+import { fetchSchemaStats } from '@/features/ontology/lib/ontology-utils'
 import { cn } from '@/lib/utils'
 import type { EntityTypeSchema, RelationshipTypeSchema } from '@/types/schema'
-import type { GraphSchemaStats, EntityTypeSummary, EdgeTypeSummary } from '@/providers/GraphDataProvider'
+import type { EntityTypeSummary, EdgeTypeSummary } from '@/providers/GraphDataProvider'
 
 import { useOntologies, useOntology } from '@/features/ontology/hooks/useOntologies'
 import { useOntologyMutations } from '@/features/ontology/hooks/useOntologyMutations'
@@ -33,7 +32,7 @@ import {
   relSchemaToBackend,
   humanizeId,
 } from '@/features/ontology/lib/ontology-parsers'
-import type { OntologyTab, EditorPanel, RelTypeWithClassifications, Toast, ToastType, CoverageState } from '@/features/ontology/lib/ontology-types'
+import type { OntologyTab, EditorPanel, RelTypeWithClassifications, Toast, ToastType } from '@/features/ontology/lib/ontology-types'
 
 import { OntologyContextBanner } from '@/features/ontology/components/OntologyContextBanner'
 import { OntologySidebar } from '@/features/ontology/components/OntologySidebar'
@@ -85,14 +84,75 @@ export function OntologySchemaPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const activeTab = (searchParams.get('tab') || 'overview') as OntologyTab
 
-  const invalidateSchema = useInvalidateGraphSchema()
-  const provider = useGraphProvider()
-
   // ── Workspace context ──────────────────────────────────────────────
   const workspaces = useWorkspacesStore(s => s.workspaces)
   const activeWorkspaceId = useWorkspacesStore(s => s.activeWorkspaceId)
   const activeDataSourceId = useWorkspacesStore(s => s.activeDataSourceId)
+  const setActiveWorkspace = useWorkspacesStore(s => s.setActiveWorkspace)
+  const setActiveDataSource = useWorkspacesStore(s => s.setActiveDataSource)
   const loadWorkspaces = useWorkspacesStore(s => s.loadWorkspaces)
+
+  // ── URL ↔ Zustand bidirectional sync ────────────────────────────
+  // Guard ref prevents the two effects from ping-ponging each other.
+  const syncSourceRef = useRef<'url' | 'zustand' | null>(null)
+
+  // URL → Zustand (on mount or when URL params change via external navigation)
+  useEffect(() => {
+    if (syncSourceRef.current === 'zustand') {
+      syncSourceRef.current = null
+      return
+    }
+    const urlWs = searchParams.get('workspaceId')
+    const urlDs = searchParams.get('dataSourceId')
+    if (urlWs && urlWs !== activeWorkspaceId) {
+      syncSourceRef.current = 'url'
+      setActiveWorkspace(urlWs)
+    }
+    if (urlDs && urlDs !== activeDataSourceId) {
+      syncSourceRef.current = 'url'
+      setActiveDataSource(urlDs)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams])
+
+  // Zustand → URL (when user switches via EnvironmentSwitcher)
+  useEffect(() => {
+    if (syncSourceRef.current === 'url') {
+      syncSourceRef.current = null
+      return
+    }
+    if (!activeWorkspaceId) return
+    const currentWs = searchParams.get('workspaceId')
+    const currentDs = searchParams.get('dataSourceId')
+    if (currentWs !== activeWorkspaceId || (activeDataSourceId && currentDs !== activeDataSourceId)) {
+      syncSourceRef.current = 'zustand'
+      setSearchParams(prev => {
+        prev.set('workspaceId', activeWorkspaceId)
+        if (activeDataSourceId) prev.set('dataSourceId', activeDataSourceId)
+        else prev.delete('dataSourceId')
+        return prev
+      }, { replace: true })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeWorkspaceId, activeDataSourceId])
+
+  // Helper: set tab while preserving workspace/data source params
+  const setTab = useCallback((tab: string) => {
+    setSearchParams(prev => {
+      prev.set('tab', tab)
+      return prev
+    })
+  }, [setSearchParams])
+
+  // Helper: build /schema/:id URL preserving workspace context
+  const schemaUrl = useCallback((ontId: string, tab?: string) => {
+    const params = new URLSearchParams()
+    if (activeWorkspaceId) params.set('workspaceId', activeWorkspaceId)
+    if (activeDataSourceId) params.set('dataSourceId', activeDataSourceId)
+    if (tab) params.set('tab', tab)
+    const qs = params.toString()
+    return `/schema/${ontId}${qs ? `?${qs}` : ''}`
+  }, [activeWorkspaceId, activeDataSourceId])
 
   const activeWorkspace = useMemo(
     () => workspaces.find(w => w.id === activeWorkspaceId) ?? null,
@@ -109,8 +169,6 @@ export function OntologySchemaPage() {
   const mutations = useOntologyMutations()
 
   // ── Local state ────────────────────────────────────────────────────
-  const [graphStats, setGraphStats] = useState<GraphSchemaStats | null>(null)
-  const [coverage, setCoverage] = useState<CoverageState | null>(null)
   const [editorPanel, setEditorPanel] = useState<EditorPanel>(null)
   const [toast, setToast] = useState<Toast | null>(null)
   const [search, setSearch] = useState('')
@@ -210,17 +268,10 @@ export function OntologySchemaPage() {
     (workingLineage && JSON.stringify(workingLineage) !== JSON.stringify(selectedOntology?.lineageEdgeTypes ?? []))
   const hasHierarchyChanges = hasEntityChanges // hierarchy changes come from entity reparenting
 
-  const entityStatMap = useMemo((): Map<string, EntityTypeSummary> => {
-    const m = new Map<string, EntityTypeSummary>()
-    for (const s of graphStats?.entityTypeStats ?? []) m.set(s.id.toLowerCase(), s)
-    return m
-  }, [graphStats])
-
-  const edgeStatMap = useMemo((): Map<string, EdgeTypeSummary> => {
-    const m = new Map<string, EdgeTypeSummary>()
-    for (const s of graphStats?.edgeTypeStats ?? []) m.set(s.id.toUpperCase(), s)
-    return m
-  }, [graphStats])
+  // Graph stat maps — populated when a data source is active and stats are fetched.
+  // Currently empty at page level; CoveragePanel fetches its own stats.
+  const entityStatMap = useMemo((): Map<string, EntityTypeSummary> => new Map(), [])
+  const edgeStatMap = useMemo((): Map<string, EdgeTypeSummary> => new Map(), [])
 
   const assignmentCountMap = useMemo(() => {
     const m = new Map<string, number>()
@@ -295,27 +346,12 @@ export function OntologySchemaPage() {
       const target = (activeDataSource?.ontologyId && ontologies.find(o => o.id === activeDataSource.ontologyId))
         ? activeDataSource.ontologyId
         : ontologies[0].id
-      navigate(`/schema/${target}`, { replace: true })
+      navigate(schemaUrl(target), { replace: true })
     }
   }, [ontologyId, ontologies, activeDataSource?.ontologyId, navigate])
 
-  // ── Load graph stats + coverage ────────────────────────────────────
+  // ── Load workspaces ────────────────────────────────────────────────
   useEffect(() => { loadWorkspaces() }, [loadWorkspaces])
-  useEffect(() => {
-    provider.getSchemaStats().then(setGraphStats).catch(() => {})
-  }, [provider])
-
-  useEffect(() => {
-    if (!ontologyId || !graphStats) return
-    ontologyDefinitionService
-      .coverage(ontologyId, graphStats as unknown as Record<string, unknown>)
-      .then(c => setCoverage({
-        uncoveredEntityTypes: c.uncoveredEntityTypes,
-        uncoveredRelationshipTypes: c.uncoveredRelationshipTypes,
-        coveragePercent: c.coveragePercent,
-      }))
-      .catch(() => setCoverage(null))
-  }, [ontologyId, graphStats])
 
   // Clear editor / validation / edit mode on ontology change
   useEffect(() => {
@@ -327,16 +363,21 @@ export function OntologySchemaPage() {
 
   // ── Handlers ───────────────────────────────────────────────────────
 
+  function handleSwitchEnvironment(wsId: string, dsId: string) {
+    setActiveWorkspace(wsId)
+    setActiveDataSource(dsId)
+    // URL will auto-sync via the Zustand → URL useEffect
+  }
+
   async function handleAssignOntology(assignId: string | undefined) {
     if (!activeWorkspace || !activeDataSource) return
     setIsAssigning(true)
     try {
       await workspaceService.updateDataSource(activeWorkspace.id, activeDataSource.id, {
-        ontologyId: assignId,
+        ontologyId: assignId ?? '',
       })
       await loadWorkspaces()
-      invalidateSchema()
-      if (assignId) navigate(`/schema/${assignId}`)
+      if (assignId) navigate(schemaUrl(assignId))
       showToast('success', assignId ? 'Semantic layer assigned to data source' : 'Semantic layer assignment cleared')
     } catch (err: unknown) {
       showToast('error', `Assignment failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -462,7 +503,8 @@ export function OntologySchemaPage() {
 
   /** Phase 2: analyze the graph, return matches + counts for the dialog to display. */
   async function handleAnalyzeGraph() {
-    const stats = await provider.getSchemaStats()
+    if (!activeWorkspaceId) throw new Error('No workspace selected')
+    const stats = await fetchSchemaStats(activeWorkspaceId, activeDataSourceId ?? undefined)
     const response = await ontologyDefinitionService.suggest(stats as unknown as Record<string, unknown>)
     suggestResponseRef.current = response
     return {
@@ -475,7 +517,7 @@ export function OntologySchemaPage() {
   /** User chose "Use This" on an existing match. */
   function handleSuggestUseExisting(ontologyId: string) {
     setShowSuggestDialog(false)
-    navigate(`/schema/${ontologyId}`)
+    navigate(schemaUrl(ontologyId))
     showToast('success', 'Navigated to the matching semantic layer')
   }
 
@@ -484,7 +526,7 @@ export function OntologySchemaPage() {
     setShowSuggestDialog(false)
     try {
       const cloned = await mutations.clone.mutateAsync(ontologyId)
-      navigate(`/schema/${cloned.id}?tab=entities`)
+      navigate(schemaUrl(cloned.id, 'entities'))
       showToast('success', 'Cloned — now editing a new draft')
     } catch (err: unknown) {
       showToast('error', `Clone failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -502,7 +544,7 @@ export function OntologySchemaPage() {
         name: `Suggested Semantic Layer (${new Date().toLocaleDateString()})`,
       })
       setShowSuggestDialog(false)
-      navigate(`/schema/${created.id}?tab=entities`)
+      navigate(schemaUrl(created.id, 'entities'))
       showToast('info', 'Draft created from graph — review types and publish when ready')
     } catch (err: unknown) {
       showToast('error', `Failed to create draft: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -515,7 +557,7 @@ export function OntologySchemaPage() {
     if (!selectedOntology) return
     try {
       const cloned = await mutations.clone.mutateAsync(selectedOntology.id)
-      navigate(`/schema/${cloned.id}`)
+      navigate(schemaUrl(cloned.id))
       showToast('success', 'Cloned — now editing a new draft')
     } catch (err: unknown) {
       showToast('error', `Clone failed: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -604,7 +646,7 @@ export function OntologySchemaPage() {
     setImportData(null)
     mutations.invalidateAll()
     if (result.ontology?.id) {
-      navigate(`/schema/${result.ontology.id}`)
+      navigate(schemaUrl(result.ontology.id))
     }
     const messages: Record<string, string> = {
       created: `Imported as new semantic layer "${result.ontology.name}"`,
@@ -633,10 +675,11 @@ export function OntologySchemaPage() {
     if (prePopulate) {
       setIsSuggesting(true)
       try {
-        const stats = await provider.getSchemaStats()
+        if (!activeWorkspaceId) throw new Error('No workspace selected')
+        const stats = await fetchSchemaStats(activeWorkspaceId, activeDataSourceId ?? undefined)
         const response = await ontologyDefinitionService.suggest(stats as unknown as Record<string, unknown>)
         const created = await ontologyDefinitionService.create({ ...response.suggested, name })
-        navigate(`/schema/${created.id}?tab=entities`)
+        navigate(schemaUrl(created.id, 'entities'))
         showToast('success', `"${name}" created with ${Object.keys(created.entityTypeDefinitions ?? {}).length} entity types from your graph`)
       } catch (err: unknown) {
         showToast('error', `Failed to create: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -646,7 +689,7 @@ export function OntologySchemaPage() {
     } else {
       try {
         const created = await mutations.create.mutateAsync({ name })
-        navigate(`/schema/${created.id}`)
+        navigate(schemaUrl(created.id))
         showToast('success', 'New draft created')
       } catch (err: unknown) {
         showToast('error', `Failed to create: ${err instanceof Error ? err.message : 'Unknown error'}`)
@@ -667,14 +710,14 @@ export function OntologySchemaPage() {
     try {
       await mutations.remove.mutateAsync(deletedId)
       const remaining = ontologies.filter(x => x.id !== deletedId)
-      navigate(remaining.length > 0 ? `/schema/${remaining[0].id}` : '/schema', { replace: true })
+      navigate(remaining.length > 0 ? schemaUrl(remaining[0].id) : '/schema', { replace: true })
       showToast('success', `"${deletedName}" deleted`, {
         label: 'Undo',
         onClick: async () => {
           try {
             await ontologyDefinitionService.restore(deletedId)
             mutations.invalidateAll()
-            navigate(`/schema/${deletedId}`)
+            navigate(schemaUrl(deletedId))
             showToast('success', `"${deletedName}" restored`)
           } catch {
             showToast('error', 'Failed to restore')
@@ -748,34 +791,35 @@ export function OntologySchemaPage() {
 
   return (
     <div className="flex flex-col h-full animate-in fade-in duration-500">
-      {/* Context Banner — compact, edge-to-edge */}
+      {/* Context breadcrumb — always visible; shows environment picker when no workspace active */}
       <div className="relative px-6 pt-3 border-b border-glass-border bg-canvas-elevated/20">
         <OntologyContextBanner
           workspace={activeWorkspace}
           dataSource={activeDataSource}
+          workspaces={workspaces}
+          selectedOntologyId={selectedOntology?.id ?? null}
           ontologies={ontologies}
           selectedOntology={selectedOntology ?? null}
-          graphStats={graphStats}
           isAssigning={isAssigning}
           onAssign={handleAssignOntology}
+          onSwitchEnvironment={handleSwitchEnvironment}
         />
       </div>
 
       {/* Main layout: Sidebar + Detail */}
       <div className="flex-1 min-h-0 flex">
-        {/* Sidebar */}
-        <div className="flex-shrink-0 overflow-hidden">
-          <OntologySidebar
+        {/* Sidebar — self-sizes via internal width state */}
+        <OntologySidebar
             ontologies={ontologies}
             selectedOntologyId={ontologyId}
             activeDataSource={activeDataSource}
             assignmentCountMap={assignmentCountMap}
+            workspaces={workspaces}
             isLoading={isLoadingOntologies}
             isSuggesting={isSuggesting}
             onCreateDraft={() => setShowCreateDialog(true)}
             onSuggest={handleSuggestOntology}
           />
-        </div>
 
         {/* Detail pane */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
@@ -810,13 +854,18 @@ export function OntologySchemaPage() {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-3">
                       <h1 className="text-2xl font-bold tracking-tight text-ink truncate">{selectedOntology.name}</h1>
-                      <span className="text-xs text-ink-muted font-mono flex-shrink-0">v{selectedOntology.version}</span>
+                      <span className={cn(
+                        'inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-bold font-mono flex-shrink-0 border',
+                        selectedOntology.isPublished || selectedOntology.isSystem
+                          ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 border-emerald-200/50 dark:border-emerald-800/40'
+                          : 'bg-amber-50 dark:bg-amber-950/20 text-amber-600 dark:text-amber-400 border-amber-200/50 dark:border-amber-800/40',
+                      )}>
+                        {selectedOntology.isPublished || selectedOntology.isSystem
+                          ? <Lock className="w-3 h-3" />
+                          : <PenLine className="w-3 h-3" />}
+                        v{selectedOntology.version}
+                      </span>
                       <OntologyStatusBadge ontology={selectedOntology} />
-                      {isImmutable
-                        ? <Lock className="w-3.5 h-3.5 text-ink-muted flex-shrink-0" />
-                        : isEditing
-                          ? <PenLine className="w-3.5 h-3.5 text-amber-500 flex-shrink-0" />
-                          : <Lock className="w-3.5 h-3.5 text-ink-muted/40 flex-shrink-0" />}
                       {hasPendingChanges && (
                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-amber-500/10 text-[10px] font-bold text-amber-600 dark:text-amber-400 ring-1 ring-amber-500/20 animate-pulse">
                           <CircleDot className="w-2.5 h-2.5" />
@@ -827,6 +876,23 @@ export function OntologySchemaPage() {
                     <p className="text-sm text-ink-muted mt-1 max-w-2xl">
                       {selectedOntology.description || `${Object.keys(selectedOntology.entityTypeDefinitions ?? {}).length} entity types · ${Object.keys(selectedOntology.relationshipTypeDefinitions ?? {}).length} relationships`}
                     </p>
+                    {/* Metadata row */}
+                    <div className="flex items-center gap-4 mt-2 flex-wrap text-[11px] text-ink-muted">
+                      <span>Created {new Date(selectedOntology.createdAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}{selectedOntology.createdBy ? ` by ${selectedOntology.createdBy}` : ''}</span>
+                      <span className="opacity-30">·</span>
+                      <span>Updated {new Date(selectedOntology.updatedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}{selectedOntology.updatedBy ? ` by ${selectedOntology.updatedBy}` : ''}</span>
+                      {selectedOntology.publishedAt && (
+                        <>
+                          <span className="opacity-30">·</span>
+                          <span className="text-emerald-600 dark:text-emerald-400">
+                            Published {new Date(selectedOntology.publishedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                            {selectedOntology.publishedBy ? ` by ${selectedOntology.publishedBy}` : ''}
+                          </span>
+                        </>
+                      )}
+                      <span className="opacity-30">·</span>
+                      <span>{selectedOntology.scope}</span>
+                    </div>
                   </div>
 
                   {/* Action toolbar */}
@@ -943,7 +1009,7 @@ export function OntologySchemaPage() {
                   return (
                     <button
                       key={t.id}
-                      onClick={() => setSearchParams({ tab: t.id })}
+                      onClick={() => setTab(t.id)}
                       className={cn(
                         'flex items-center gap-2 px-4 py-3 text-sm font-semibold transition-all border-b-2 relative',
                         isActive
@@ -986,12 +1052,10 @@ export function OntologySchemaPage() {
                       {activeTab === 'overview' && (
                         <OverviewPanel
                           ontology={selectedOntology}
-                          graphStats={graphStats}
-                          coverage={coverage}
+                          workspaceId={activeWorkspaceId}
+                          dataSourceId={activeDataSourceId}
                           assignmentCount={assignmentCountMap.get(selectedOntology.id) ?? 0}
-                          onNavigateTab={(tab) => setSearchParams({ tab })}
-                          onExport={handleExport}
-                          onImport={() => fileInputRef.current?.click()}
+                          onNavigateTab={(tab) => setTab(tab)}
                         />
                       )}
 
@@ -1035,15 +1099,16 @@ export function OntologySchemaPage() {
                           isLocked={isLocked}
                           isSaving={isSaving}
                           onReparent={handleReparentEntityType}
-                          onEditType={et => { setEditorPanel({ kind: 'entity', data: et }); setSearchParams({ tab: 'entities' }) }}
+                          onEditType={et => { setEditorPanel({ kind: 'entity', data: et }); setTab('entities') }}
                           onUpdateContainmentEdgeTypes={handleUpdateContainmentEdgeTypes}
                         />
                       )}
 
                       {activeTab === 'coverage' && (
                         <CoveragePanel
-                          coverage={coverage}
-                          graphStats={graphStats}
+                          ontologyId={selectedOntology.id}
+                          workspaceId={activeWorkspaceId}
+                          dataSourceId={activeDataSourceId}
                           isLocked={isLocked}
                           onDefineEntity={typeId => {
                             const name = humanizeId(typeId)
@@ -1057,7 +1122,7 @@ export function OntologySchemaPage() {
                                 behavior: { selectable: true, draggable: true, expandable: true, traceable: true, clickAction: 'select', doubleClickAction: 'expand' },
                               },
                             })
-                            setSearchParams({ tab: 'entities' })
+                            setTab('entities')
                           }}
                           onDefineRel={typeId => {
                             const name = humanizeId(typeId)
@@ -1069,13 +1134,13 @@ export function OntologySchemaPage() {
                                 bidirectional: false, showLabel: false, isContainment: false, isLineage: false,
                               },
                             })
-                            setSearchParams({ tab: 'relationships' })
+                            setTab('relationships')
                           }}
                         />
                       )}
 
                       {activeTab === 'usage' && (
-                        <UsagePanel ontology={selectedOntology} />
+                        <UsagePanel ontology={selectedOntology} workspaces={workspaces} ontologies={ontologies} />
                       )}
 
                       {activeTab === 'history' && (
