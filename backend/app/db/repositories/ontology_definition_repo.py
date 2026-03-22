@@ -7,17 +7,92 @@ import logging
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import select, delete, func
+from sqlalchemy import select, delete, func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import OntologyORM
+from ..models import OntologyORM, OntologyAuditLogORM
 from backend.common.models.management import (
     OntologyCreateRequest,
     OntologyUpdateRequest,
     OntologyDefinitionResponse,
+    OntologyAuditEntry,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ------------------------------------------------------------------ #
+# Audit trail helper                                                   #
+# ------------------------------------------------------------------ #
+
+async def _record_audit(
+    session: AsyncSession,
+    row: OntologyORM,
+    action: str,
+    *,
+    actor: str | None = None,
+    summary: str | None = None,
+    changes: dict | None = None,
+) -> None:
+    """Append an immutable audit log entry for an ontology lifecycle event."""
+    entry = OntologyAuditLogORM(
+        ontology_id=row.id,
+        schema_id=getattr(row, "schema_id", None) or row.id,
+        action=action,
+        actor=actor or getattr(row, "updated_by", None) or getattr(row, "created_by", None),
+        version=row.version,
+        summary=summary,
+        changes=json.dumps(changes) if changes else None,
+    )
+    session.add(entry)
+    await session.flush()
+
+
+def _compute_type_diff(
+    old_entities: set, new_entities: set,
+    old_rels: set, new_rels: set,
+) -> dict:
+    """Compute added/removed entity and relationship types."""
+    return {
+        "addedEntityTypes": sorted(new_entities - old_entities),
+        "removedEntityTypes": sorted(old_entities - new_entities),
+        "addedRelationshipTypes": sorted(new_rels - old_rels),
+        "removedRelationshipTypes": sorted(old_rels - new_rels),
+    }
+
+
+async def get_audit_log(
+    session: AsyncSession,
+    schema_id: str,
+    *,
+    action: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[OntologyAuditEntry]:
+    """Return audit entries for an ontology schema, newest first. Supports filtering and pagination."""
+    q = (
+        select(OntologyAuditLogORM)
+        .where(OntologyAuditLogORM.schema_id == schema_id)
+    )
+    if action:
+        q = q.where(OntologyAuditLogORM.action == action)
+    q = q.order_by(OntologyAuditLogORM.created_at.desc()).limit(limit).offset(offset)
+    result = await session.execute(q)
+    rows = result.scalars().all()
+    return [
+        OntologyAuditEntry(
+            id=r.id,
+            ontologyId=r.ontology_id,
+            schemaId=r.schema_id,
+            action=r.action,
+            actor=r.actor,
+            version=r.version,
+            summary=r.summary,
+            changes=json.loads(r.changes) if r.changes else None,
+            createdAt=r.created_at,
+        )
+        for r in rows
+    ]
 
 
 # ------------------------------------------------------------------ #
@@ -41,6 +116,14 @@ def _to_response(row: OntologyORM) -> OntologyDefinitionResponse:
         isPublished=bool(row.is_published),
         isSystem=bool(row.is_system) if row.is_system is not None else False,
         scope=row.scope or "universal",
+        schemaId=getattr(row, "schema_id", None) or row.id,
+        revision=getattr(row, "revision", 0) or 0,
+        createdBy=getattr(row, "created_by", None),
+        updatedBy=getattr(row, "updated_by", None),
+        publishedBy=getattr(row, "published_by", None),
+        publishedAt=getattr(row, "published_at", None),
+        deletedBy=getattr(row, "deleted_by", None),
+        deletedAt=getattr(row, "deleted_at", None),
         createdAt=row.created_at,
         updatedAt=row.updated_at,
     )
@@ -50,20 +133,62 @@ def _to_response(row: OntologyORM) -> OntologyDefinitionResponse:
 # CRUD                                                                 #
 # ------------------------------------------------------------------ #
 
-async def list_ontologies(session: AsyncSession) -> List[OntologyDefinitionResponse]:
+async def list_ontologies(session: AsyncSession, include_deleted: bool = False) -> List[OntologyDefinitionResponse]:
     """List all ontologies (all versions)."""
-    result = await session.execute(
-        select(OntologyORM).order_by(
-            OntologyORM.name,
-            OntologyORM.version.desc(),
-        )
+    q = select(OntologyORM).order_by(
+        OntologyORM.name,
+        OntologyORM.version.desc(),
     )
+    if not include_deleted:
+        q = q.where(OntologyORM.deleted_at.is_(None))
+    result = await session.execute(q)
     return [_to_response(r) for r in result.scalars().all()]
 
 
-async def list_latest_ontologies(session: AsyncSession) -> List[OntologyDefinitionResponse]:
-    """List only the latest version of each ontology name."""
-    sub = (
+async def list_latest_ontologies(session: AsyncSession, include_deleted: bool = False) -> List[OntologyDefinitionResponse]:
+    """List only the latest version of each ontology schema.
+
+    Primary strategy: group by schema_id (populated by backfill migration).
+    Fallback: if no ontologies have schema_id set but ontologies exist,
+    fall back to name-based grouping (pre-migration compatibility).
+    """
+    # Try schema_id-based grouping first
+    sub_q = (
+        select(
+            OntologyORM.schema_id,
+            func.max(OntologyORM.version).label("max_ver"),
+        )
+        .where(OntologyORM.schema_id != "")
+    )
+    if not include_deleted:
+        sub_q = sub_q.where(OntologyORM.deleted_at.is_(None))
+    sub = sub_q.group_by(OntologyORM.schema_id).subquery()
+    result = await session.execute(
+        select(OntologyORM)
+        .join(
+            sub,
+            (OntologyORM.schema_id == sub.c.schema_id)
+            & (OntologyORM.version == sub.c.max_ver),
+        )
+        .order_by(OntologyORM.name)
+    )
+    rows = result.scalars().all()
+    if rows:
+        return [_to_response(r) for r in rows]
+
+    # Fallback: check if ontologies exist but lack schema_id (backfill hasn't run)
+    total = await session.execute(
+        select(func.count()).select_from(OntologyORM)
+    )
+    if total.scalar() == 0:
+        return []
+
+    # Name-based grouping fallback
+    logger.warning(
+        "list_latest_ontologies: no ontologies with schema_id set; "
+        "falling back to name-based grouping"
+    )
+    name_sub = (
         select(
             OntologyORM.name,
             func.max(OntologyORM.version).label("max_ver"),
@@ -74,9 +199,9 @@ async def list_latest_ontologies(session: AsyncSession) -> List[OntologyDefiniti
     result = await session.execute(
         select(OntologyORM)
         .join(
-            sub,
-            (OntologyORM.name == sub.c.name)
-            & (OntologyORM.version == sub.c.max_ver),
+            name_sub,
+            (OntologyORM.name == name_sub.c.name)
+            & (OntologyORM.version == name_sub.c.max_ver),
         )
         .order_by(OntologyORM.name)
     )
@@ -135,6 +260,15 @@ async def create_ontology(
     )
     session.add(row)
     await session.flush()
+    # First version seeds its own schema_id
+    row.schema_id = row.id
+    await session.flush()
+    entity_count = len(json.loads(row.entity_type_definitions or "{}"))
+    rel_count = len(json.loads(row.relationship_type_definitions or "{}"))
+    await _record_audit(
+        session, row, "created",
+        summary=f"Created draft v1 with {entity_count} entity types, {rel_count} relationships",
+    )
     return _to_response(row)
 
 
@@ -170,6 +304,10 @@ async def update_ontology(
     if row.is_published and not _is_metadata_only(req):
         return await _create_new_version(session, row, req)
 
+    # Snapshot before-state for audit diff
+    old_entities = set(json.loads(row.entity_type_definitions or "{}").keys())
+    old_rels = set(json.loads(row.relationship_type_definitions or "{}").keys())
+
     if req.name is not None:
         row.name = req.name
     if req.description is not None:
@@ -191,8 +329,30 @@ async def update_ontology(
     if req.evolution_policy is not None:
         row.evolution_policy = req.evolution_policy
 
+    row.revision = (getattr(row, 'revision', 0) or 0) + 1
     row.updated_at = datetime.now(timezone.utc).isoformat()
     await session.flush()
+
+    # Compute change diff for audit
+    new_entities = set(json.loads(row.entity_type_definitions or "{}").keys())
+    new_rels = set(json.loads(row.relationship_type_definitions or "{}").keys())
+    changes = _compute_type_diff(old_entities, new_entities, old_rels, new_rels)
+    parts = []
+    if _is_metadata_only(req):
+        parts.append("Updated metadata")
+    else:
+        if changes.get("addedEntityTypes"):
+            parts.append(f"Added {len(changes['addedEntityTypes'])} entity type(s)")
+        if changes.get("removedEntityTypes"):
+            parts.append(f"Removed {len(changes['removedEntityTypes'])} entity type(s)")
+        if changes.get("addedRelationshipTypes"):
+            parts.append(f"Added {len(changes['addedRelationshipTypes'])} relationship(s)")
+        if changes.get("removedRelationshipTypes"):
+            parts.append(f"Removed {len(changes['removedRelationshipTypes'])} relationship(s)")
+        if not parts:
+            parts.append("Updated type definitions")
+    await _record_audit(session, row, "updated", summary="; ".join(parts), changes=changes if not _is_metadata_only(req) else None)
+
     return _to_response(row)
 
 
@@ -202,14 +362,16 @@ async def _create_new_version(
     req: OntologyUpdateRequest,
 ) -> OntologyDefinitionResponse:
     """Create a new version of a published ontology with the requested changes."""
+    schema_id = original.schema_id or original.id
     result = await session.execute(
         select(func.max(OntologyORM.version)).where(
-            OntologyORM.name == original.name
+            OntologyORM.schema_id == schema_id
         )
     )
     max_version = result.scalar() or 0
 
     new_row = OntologyORM(
+        schema_id=schema_id,
         name=req.name if req.name is not None else original.name,
         description=req.description if req.description is not None else getattr(original, "description", None),
         version=max_version + 1,
@@ -259,6 +421,10 @@ async def _create_new_version(
     )
     session.add(new_row)
     await session.flush()
+    await _record_audit(
+        session, new_row, "cloned",
+        summary=f"Created v{new_row.version} from published v{original.version}",
+    )
     return _to_response(new_row)
 
 
@@ -268,19 +434,57 @@ async def publish_ontology(
     row = await get_ontology_orm(session, ontology_id)
     if not row:
         return None
+    now = datetime.now(timezone.utc).isoformat()
     row.is_published = True
-    row.updated_at = datetime.now(timezone.utc).isoformat()
+    row.published_at = now
+    row.updated_at = now
     await session.flush()
+    # Audit trail
+    await _record_audit(session, row, "published", summary=f"Published v{row.version}")
     return _to_response(row)
 
 
 async def delete_ontology(
     session: AsyncSession, ontology_id: str
 ) -> bool:
+    """Soft-delete an ontology by setting deleted_at timestamp."""
+    row = await get_ontology_orm(session, ontology_id)
+    if not row or row.deleted_at:
+        return False
+    now = datetime.now(timezone.utc).isoformat()
+    row.deleted_at = now
+    await session.flush()
+    await _record_audit(session, row, "deleted", summary=f"Deleted \"{row.name}\" v{row.version}")
+    return True
+
+
+async def restore_ontology(
+    session: AsyncSession, ontology_id: str
+) -> Optional[OntologyDefinitionResponse]:
+    """Restore a soft-deleted ontology by clearing deleted_at."""
     result = await session.execute(
-        delete(OntologyORM).where(OntologyORM.id == ontology_id)
+        select(OntologyORM)
+        .where(OntologyORM.id == ontology_id)
+        .where(OntologyORM.deleted_at.isnot(None))
     )
-    return result.rowcount > 0
+    row = result.scalar_one_or_none()
+    if not row:
+        return None
+    row.deleted_at = None
+    row.deleted_by = None
+    await session.flush()
+    await _record_audit(session, row, "restored", summary=f"Restored \"{row.name}\" v{row.version}")
+    return _to_response(row)
+
+
+async def list_versions_by_schema(session: AsyncSession, schema_id: str) -> List[OntologyDefinitionResponse]:
+    """List all versions of an ontology by schema_id."""
+    result = await session.execute(
+        select(OntologyORM)
+        .where(OntologyORM.schema_id == schema_id)
+        .order_by(OntologyORM.version.desc())
+    )
+    return [_to_response(r) for r in result.scalars().all()]
 
 
 async def has_data_sources(session: AsyncSession, ontology_id: str) -> bool:
