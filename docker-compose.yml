@@ -20,9 +20,11 @@
 
 services:
 
-  # ── FalkorDB (Graph Database) ─────────────────────────────────────
+  # ── FalkorDB (Graph Database) — pre-loaded with sample data ───────
   falkordb:
-    image: falkordb/falkordb:latest
+    build:
+      context: ./data/quickstart
+      dockerfile: Dockerfile.falkordb
     ports:
       - "6379:6379"
       - "3000:3000"       # FalkorDB Browser UI
@@ -114,8 +116,8 @@ services:
   # to the backend services.
   frontend:
     build:
-      context: ./frontend
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: frontend/Dockerfile
     ports:
       - "3080:80"
     depends_on:
