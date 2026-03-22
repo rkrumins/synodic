@@ -27,12 +27,18 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------ #
 
 def _ds_to_response(row: WorkspaceDataSourceORM) -> DataSourceResponse:
+    # Resolve display label: explicit label → graph_name (physical asset) → catalog item name
+    resolved_label = row.label
+    if not resolved_label and row.graph_name:
+        resolved_label = row.graph_name
+    if not resolved_label and hasattr(row, 'catalog_item') and row.catalog_item:
+        resolved_label = row.catalog_item.name or row.catalog_item.source_identifier
     return DataSourceResponse(
         id=row.id,
         workspaceId=row.workspace_id,
         catalogItemId=row.catalog_item_id,
         ontologyId=row.ontology_id,
-        label=row.label,
+        label=resolved_label,
         isPrimary=bool(row.is_primary),
         isActive=bool(row.is_active),
         projectionMode=row.projection_mode,
@@ -140,7 +146,7 @@ async def create_workspace(
             provider_id=cat.provider_id,
             graph_name=cat.source_identifier,
             ontology_id=ds_req.ontology_id,
-            label=ds_req.label,
+            label=ds_req.label or cat.name or cat.source_identifier,
             is_primary=(i == 0),  # first data source is primary by default
             is_active=True,
         )
