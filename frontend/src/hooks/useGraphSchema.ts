@@ -77,7 +77,7 @@ export function useGraphSchema() {
     queryFn: () => fetchGraphSchema(provider, workspaceId ?? undefined, dataSourceId ?? undefined),
     staleTime: 5 * 60 * 1000,   // 5 minutes — matches backend _ONTOLOGY_CACHE_TTL
     gcTime: 10 * 60 * 1000,     // 10 minutes garbage collection
-    retry: 1,
+    retry: false,                // Don't retry — fallback to defaultWorkspaceSchema handles it
     refetchOnWindowFocus: false,
   })
 

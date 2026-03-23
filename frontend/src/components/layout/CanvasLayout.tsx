@@ -4,8 +4,7 @@
  * Wraps /views/:viewId, /schema, and /explorer so that:
  *   - useGraphSchema() (fetches /metadata/schema) only fires when the user
  *     navigates to a canvas-bearing route, not on /dashboard or /admin.
- *   - A loading gate prevents CanvasRouter from mounting before the ontology
- *     is available, avoiding a spurious empty-state flash.
+ *   - Child routes always mount — they handle their own loading/error states.
  *
  * When the provider is unavailable, the layout renders in degraded mode:
  *   - Schema loads from management DB cache (fast, no provider dependency)
@@ -24,19 +23,9 @@ import { useGraphSchema } from '@/hooks/useGraphSchema'
 export function CanvasLayout() {
   const { isLoading, isFetching, isError, error, refetch } = useGraphSchema()
 
-  if (isLoading) {
-    return (
-      <div className="absolute inset-0 flex items-center justify-center bg-canvas">
-        <div className="flex flex-col items-center gap-3">
-          <Loader2 className="w-6 h-6 animate-spin text-accent-lineage" />
-          <span className="text-sm text-ink-muted">Loading schema…</span>
-        </div>
-      </div>
-    )
-  }
-
   return (
     <>
+      {/* Always render child routes — they manage their own loading/error */}
       <Outlet />
 
       {/* Degraded-mode pill — top-center, floating above the canvas */}
@@ -73,6 +62,16 @@ export function CanvasLayout() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Initial schema load overlay — non-blocking, pointer-events-none */}
+      {isLoading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-canvas/60 backdrop-blur-[2px] z-30 pointer-events-none">
+          <div className="flex flex-col items-center gap-3">
+            <Loader2 className="w-6 h-6 animate-spin text-accent-lineage" />
+            <span className="text-sm text-ink-muted">Loading schema…</span>
+          </div>
+        </div>
+      )}
 
       {/* Subtle overlay during schema refetches (workspace/datasource switch) */}
       {isFetching && !isLoading && (
