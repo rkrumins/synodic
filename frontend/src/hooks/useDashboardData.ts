@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useWorkspaces } from './useWorkspaces'
 import { useSchemaStore } from '@/store/schema'
+import { fetchWithTimeout } from '@/services/fetchWithTimeout'
 import type { ViewConfiguration } from '@/types/schema'
 
 const EMPTY_VIEWS: ViewConfiguration[] = []
@@ -99,13 +100,14 @@ export function useDashboardData() {
             const fetchPromises = workspaces.flatMap(ws =>
                 (ws.dataSources || []).map(async ds => {
                     try {
-                        const url = `/api/v1/${ws.id}/graph/stats?dataSourceId=${ds.id}`
-                        const res = await fetch(url)
+                        // Use cached-stats endpoint (DB-only) — no provider dependency
+                        const url = `/api/v1/admin/workspaces/${ws.id}/datasources/${ds.id}/cached-stats`
+                        const res = await fetchWithTimeout(url)
                         if (res.ok) {
                             const data = await res.json()
-                            const nodeCount = data.node_count ?? data.nodeCount ?? data.totalNodes ?? 0
-                            const edgeCount = data.edge_count ?? data.edgeCount ?? data.totalEdges ?? 0
-                            const entityTypes = data.entity_types ?? data.entityTypes ?? []
+                            const nodeCount = data.nodeCount ?? 0
+                            const edgeCount = data.edgeCount ?? 0
+                            const entityTypes = Object.keys(data.entityTypeCounts ?? {})
                             results[`${ws.id}/${ds.id}`] = { nodeCount, edgeCount, entityTypes }
                             totalEntities += nodeCount
                         }
@@ -128,7 +130,7 @@ export function useDashboardData() {
         const fetchTemplates = async () => {
             setIsLoadingTemplates(true)
             try {
-                const res = await fetch('/api/v1/admin/context-model-templates')
+                const res = await fetchWithTimeout('/api/v1/admin/context-model-templates')
                 if (res.ok) {
                     const data = await res.json()
                     setTemplates(data || [])
@@ -147,7 +149,7 @@ export function useDashboardData() {
         const fetchOntologies = async () => {
             setIsLoadingOntologies(true)
             try {
-                const res = await fetch('/api/v1/admin/ontologies')
+                const res = await fetchWithTimeout('/api/v1/admin/ontologies')
                 if (res.ok) {
                     const data = await res.json()
                     setOntologies(data || [])

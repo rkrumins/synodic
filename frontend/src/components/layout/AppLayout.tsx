@@ -20,6 +20,7 @@ import { useSchemaStore } from '@/store/schema'
 import { listViews, viewToViewConfig } from '@/services/viewApiService'
 import { useWorkspacesStore } from '@/store/workspaces'
 import { useRouteSync } from '@/hooks/useRouteSync'
+import { useBackendRecovery } from '@/hooks/useBackendRecovery'
 
 // Context for View Editor Modal
 interface ViewEditorContextType {
@@ -57,6 +58,9 @@ export function AppLayout() {
 
   // Sync React Router location with Zustand navigation store
   useRouteSync()
+
+  // Auto-recover data when backend comes back from an outage
+  useBackendRecovery()
 
   // Load views from the API into the schema store cache.
   // Fetches ALL accessible views (no workspace filter) so that cross-workspace

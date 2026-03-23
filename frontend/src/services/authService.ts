@@ -2,6 +2,8 @@
  * Auth Service — signup, login, and user profile API calls.
  */
 
+import { fetchWithTimeout } from './fetchWithTimeout'
+
 const AUTH_API = '/api/v1/auth'
 const USERS_API = '/api/v1/users'
 
@@ -38,7 +40,7 @@ export interface LoginResponse {
 // ── HTTP helper (no auth header for public endpoints) ─────────────────
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(url, {
+    const res = await fetchWithTimeout(url, {
         ...init,
         headers: { 'Content-Type': 'application/json', ...init?.headers },
     })

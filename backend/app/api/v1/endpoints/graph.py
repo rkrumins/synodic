@@ -1,4 +1,5 @@
 from typing import List, Optional, Any
+import json
 import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Body
 from fastapi.responses import JSONResponse
@@ -49,6 +50,28 @@ async def get_context_engine(
     if connectionId:
         return await ContextEngine.for_connection(connectionId, provider_registry, session)
     return context_engine
+
+
+# ------------------------------------------------------------------ #
+# Helper: resolve data source ID from workspace (DB-only, no provider)#
+# ------------------------------------------------------------------ #
+
+async def _resolve_data_source_id(
+    session: AsyncSession,
+    ws_id: Optional[str],
+    data_source_id: Optional[str],
+) -> Optional[str]:
+    """Resolve the data source ID for a workspace without touching the provider.
+    Returns the explicit data_source_id if given, otherwise looks up the primary
+    data source for the workspace.  Returns None if nothing can be resolved.
+    """
+    if data_source_id:
+        return data_source_id
+    if not ws_id:
+        return None
+    from backend.app.db.repositories.data_source_repo import get_primary_data_source
+    ds = await get_primary_data_source(session, ws_id)
+    return ds.id if ds else None
 
 
 # ------------------------------------------------------------------ #
@@ -208,32 +231,38 @@ async def get_neighborhood_map(
 
 @router.get("/stats", deprecated=True)
 async def get_graph_stats(
+    ws_id: Optional[str] = None,
     dataSourceId: Optional[str] = Query(None, description="Target a specific data source within a workspace."),
-    engine: ContextEngine = Depends(get_context_engine),
+    connectionId: Optional[str] = Query(None, description="Legacy connection ID."),
     session: AsyncSession = Depends(get_db_session),
 ):
     """**Deprecated:** Use `GET /introspection` instead — returns a superset of stats with full schema details."""
     logger.warning("Deprecated endpoint GET /stats called — use GET /introspection")
     from backend.app.db.repositories.stats_repo import get_data_source_stats
-    import json
-    
-    # Try fetching from cache first
-    ds_id = dataSourceId or engine._data_source_id
+
+    # 1. Try DB cache first (no provider needed)
+    ds_id = await _resolve_data_source_id(session, ws_id, dataSourceId)
     if ds_id:
-        stats_cache = await get_data_source_stats(session, ds_id)
-        if stats_cache:
-            try:
+        try:
+            stats_cache = await get_data_source_stats(session, ds_id)
+            if stats_cache:
                 return {
                     "nodeCount": stats_cache.node_count,
                     "edgeCount": stats_cache.edge_count,
                     "entityTypeCounts": json.loads(stats_cache.entity_type_counts),
                     "edgeTypeCounts": json.loads(stats_cache.edge_type_counts)
                 }
-            except Exception:
-                pass # Fallback to runtime if JSON fails
-    
-    # Fallback to runtime
-    return await engine.get_stats()
+        except Exception:
+            pass  # Cache lookup or parse failed — fall through to provider
+
+    # 2. Only try provider if cache miss
+    try:
+        engine = await ContextEngine.for_workspace(
+            ws_id, provider_registry, session, data_source_id=dataSourceId
+        ) if ws_id else await ContextEngine.for_connection(connectionId, provider_registry, session)
+        return await engine.get_stats()
+    except Exception as exc:
+        raise HTTPException(503, detail=f"Graph provider unavailable and no cached data: {exc}")
 
 
 @router.get("/nodes", response_model=List[GraphNode], response_model_by_alias=True,
@@ -397,30 +426,39 @@ async def save_graph(
 
 @router.get("/introspection", response_model=GraphSchemaStats, response_model_by_alias=True)
 async def get_graph_introspection(
+    ws_id: Optional[str] = None,
     dataSourceId: Optional[str] = Query(None, description="Target a specific data source within a workspace."),
-    engine: ContextEngine = Depends(get_context_engine),
+    connectionId: Optional[str] = Query(None, description="Legacy connection ID."),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get detailed schema statistics for the graph."""
     from backend.app.db.repositories.stats_repo import get_data_source_stats
-    import json
-    
-    ds_id = dataSourceId or engine._data_source_id
+
+    # 1. Try DB cache first (no provider needed)
+    ds_id = await _resolve_data_source_id(session, ws_id, dataSourceId)
     if ds_id:
-        stats_cache = await get_data_source_stats(session, ds_id)
-        if stats_cache and stats_cache.schema_stats and stats_cache.schema_stats != "{}":
-            try:
+        try:
+            stats_cache = await get_data_source_stats(session, ds_id)
+            if stats_cache and stats_cache.schema_stats and stats_cache.schema_stats != "{}":
                 return GraphSchemaStats.model_validate(json.loads(stats_cache.schema_stats))
-            except Exception:
-                pass
-                
-    return await engine.get_schema_stats()
+        except Exception:
+            pass  # Cache lookup or parse failed — fall through to provider
+
+    # 2. Only try provider if cache miss
+    try:
+        engine = await ContextEngine.for_workspace(
+            ws_id, provider_registry, session, data_source_id=dataSourceId
+        ) if ws_id else await ContextEngine.for_connection(connectionId, provider_registry, session)
+        return await engine.get_schema_stats()
+    except Exception as exc:
+        raise HTTPException(503, detail=f"Graph provider unavailable and no cached data: {exc}")
 
 
 @router.get("/metadata/ontology", deprecated=True)
 async def get_ontology_metadata(
+    ws_id: Optional[str] = None,
     dataSourceId: Optional[str] = Query(None, description="Target a specific data source within a workspace."),
-    engine: ContextEngine = Depends(get_context_engine),
+    connectionId: Optional[str] = Query(None, description="Legacy connection ID."),
     session: AsyncSession = Depends(get_db_session),
 ):
     """Get ontology metadata including containment edge types and entity hierarchies.
@@ -429,32 +467,39 @@ async def get_ontology_metadata(
     """
     logger.warning("Deprecated endpoint GET /metadata/ontology called — use GET /metadata/schema")
     from backend.app.db.repositories.stats_repo import get_data_source_stats
-    import json
-    
-    ds_id = dataSourceId or engine._data_source_id
+
+    # 1. Try DB cache first (no provider needed)
+    ds_id = await _resolve_data_source_id(session, ws_id, dataSourceId)
     if ds_id:
-        stats_cache = await get_data_source_stats(session, ds_id)
-        if stats_cache and stats_cache.ontology_metadata and stats_cache.ontology_metadata != "{}":
-            try:
-                # Assuming the string is already a valid JSON structure from the Pydantic dump
+        try:
+            stats_cache = await get_data_source_stats(session, ds_id)
+            if stats_cache and stats_cache.ontology_metadata and stats_cache.ontology_metadata != "{}":
                 return JSONResponse(
                     content=json.loads(stats_cache.ontology_metadata),
                     headers={"Cache-Control": "private, max-age=300"},
                 )
-            except Exception:
-                pass
+        except Exception:
+            pass  # Cache lookup or parse failed — fall through to provider
 
-    result = await engine.get_ontology_metadata()
-    return JSONResponse(
-        content=result.model_dump(by_alias=True),
-        headers={"Cache-Control": "private, max-age=300"},
-    )
+    # 2. Only try provider if cache miss
+    try:
+        engine = await ContextEngine.for_workspace(
+            ws_id, provider_registry, session, data_source_id=dataSourceId
+        ) if ws_id else await ContextEngine.for_connection(connectionId, provider_registry, session)
+        result = await engine.get_ontology_metadata()
+        return JSONResponse(
+            content=result.model_dump(by_alias=True),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+    except Exception as exc:
+        raise HTTPException(503, detail=f"Graph provider unavailable and no cached data: {exc}")
 
 
 @router.get("/metadata/schema")
 async def get_graph_schema(
+    ws_id: Optional[str] = None,
     dataSourceId: Optional[str] = Query(None, description="Target a specific data source within a workspace."),
-    engine: ContextEngine = Depends(get_context_engine),
+    connectionId: Optional[str] = Query(None, description="Legacy connection ID."),
     session: AsyncSession = Depends(get_db_session),
 ):
     """
@@ -463,25 +508,32 @@ async def get_graph_schema(
     This enables frontend to dynamically load schema from backend.
     """
     from backend.app.db.repositories.stats_repo import get_data_source_stats
-    import json
-    
-    ds_id = dataSourceId or engine._data_source_id
+
+    # 1. Try DB cache first (no provider needed)
+    ds_id = await _resolve_data_source_id(session, ws_id, dataSourceId)
     if ds_id:
-        stats_cache = await get_data_source_stats(session, ds_id)
-        if stats_cache and stats_cache.graph_schema and stats_cache.graph_schema != "{}":
-            try:
+        try:
+            stats_cache = await get_data_source_stats(session, ds_id)
+            if stats_cache and stats_cache.graph_schema and stats_cache.graph_schema != "{}":
                 return JSONResponse(
                     content=json.loads(stats_cache.graph_schema),
                     headers={"Cache-Control": "private, max-age=300"},
                 )
-            except Exception:
-                pass
+        except Exception:
+            pass  # Cache lookup or parse failed — fall through to provider
 
-    result = await engine.get_graph_schema()
-    return JSONResponse(
-        content=result.model_dump(by_alias=True),
-        headers={"Cache-Control": "private, max-age=300"},
-    )
+    # 2. Only try provider if cache miss
+    try:
+        engine = await ContextEngine.for_workspace(
+            ws_id, provider_registry, session, data_source_id=dataSourceId
+        ) if ws_id else await ContextEngine.for_connection(connectionId, provider_registry, session)
+        result = await engine.get_graph_schema()
+        return JSONResponse(
+            content=result.model_dump(by_alias=True),
+            headers={"Cache-Control": "private, max-age=300"},
+        )
+    except Exception as exc:
+        raise HTTPException(503, detail=f"Graph provider unavailable and no cached data: {exc}")
 
 
 @router.post("/edges/aggregated", response_model=AggregatedEdgeResult, response_model_by_alias=True)

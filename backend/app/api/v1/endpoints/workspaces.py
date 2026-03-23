@@ -258,3 +258,121 @@ async def set_projection_mode(
     await session.flush()
     await provider_registry.evict_workspace(workspace_id, session)
     return await data_source_repo.get_data_source(session, ds_id)
+
+
+# ================================================================== #
+# Cached Stats (DB-only — zero provider dependency)                    #
+# ================================================================== #
+
+@router.get("/{workspace_id}/datasources/{ds_id}/cached-stats")
+async def get_cached_stats(
+    workspace_id: str = Path(...),
+    ds_id: str = Path(...),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Return cached graph statistics for a data source.
+
+    Reads from the ``data_source_stats`` table (populated by the stats poller).
+    Zero dependency on graph provider connectivity — safe to call even when the
+    provider is unreachable.
+    """
+    import json
+    from backend.app.db.repositories.stats_repo import get_data_source_stats
+
+    # Verify the data source belongs to this workspace
+    ds = await data_source_repo.get_data_source_orm(session, ds_id)
+    if not ds or ds.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail=f"Data source '{ds_id}' not found in workspace '{workspace_id}'")
+
+    stats = await get_data_source_stats(session, ds_id)
+    if not stats:
+        raise HTTPException(status_code=404, detail="No cached stats available yet — the stats poller may not have run.")
+
+    return {
+        "nodeCount": stats.node_count,
+        "edgeCount": stats.edge_count,
+        "entityTypeCounts": json.loads(stats.entity_type_counts) if stats.entity_type_counts else {},
+        "edgeTypeCounts": json.loads(stats.edge_type_counts) if stats.edge_type_counts else {},
+        "schemaStats": json.loads(stats.schema_stats) if stats.schema_stats and stats.schema_stats != "{}" else None,
+        "ontologyMetadata": json.loads(stats.ontology_metadata) if stats.ontology_metadata and stats.ontology_metadata != "{}" else None,
+        "graphSchema": json.loads(stats.graph_schema) if stats.graph_schema and stats.graph_schema != "{}" else None,
+        "updatedAt": stats.updated_at,
+    }
+
+
+# ================================================================== #
+# Cached Schema (DB-only — zero provider dependency)                   #
+# ================================================================== #
+
+@router.get("/{workspace_id}/datasources/{ds_id}/cached-schema")
+async def get_cached_schema(
+    workspace_id: str = Path(...),
+    ds_id: str = Path(...),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Return cached graph schema for a data source.
+
+    Reads from the ``data_source_stats`` table (populated by the stats poller).
+    Falls back to building a schema from the ontology definition if no cached
+    schema exists.  Zero dependency on graph provider connectivity.
+    """
+    import json
+    from backend.app.db.repositories.stats_repo import get_data_source_stats
+
+    # Verify the data source belongs to this workspace
+    ds = await data_source_repo.get_data_source_orm(session, ds_id)
+    if not ds or ds.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail=f"Data source '{ds_id}' not found in workspace '{workspace_id}'")
+
+    # Try cached schema from stats poller
+    stats = await get_data_source_stats(session, ds_id)
+    if stats and stats.graph_schema and stats.graph_schema != "{}":
+        return json.loads(stats.graph_schema)
+
+    # Fallback: build schema from the ontology definition assigned to this data source
+    if ds.ontology_id:
+        try:
+            from backend.app.ontology.adapters.sqlalchemy_repo import SQLAlchemyOntologyRepository
+            from backend.app.ontology.service import LocalOntologyService
+            repo = SQLAlchemyOntologyRepository(session)
+            svc = LocalOntologyService(repo)
+            resolved = await svc.resolve(ds.ontology_id, ds_id)
+            return {
+                "entityTypes": [],
+                "relationshipTypes": [],
+                "ontology": resolved.model_dump(by_alias=True) if resolved else {},
+            }
+        except Exception:
+            pass  # Ontology resolution failed — return 404
+
+    raise HTTPException(status_code=404, detail="No cached schema available yet — the stats poller may not have run.")
+
+
+# ================================================================== #
+# Cached Ontology Metadata (DB-only — zero provider dependency)        #
+# ================================================================== #
+
+@router.get("/{workspace_id}/datasources/{ds_id}/cached-ontology")
+async def get_cached_ontology(
+    workspace_id: str = Path(...),
+    ds_id: str = Path(...),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Return cached ontology metadata for a data source.
+
+    Reads from the ``data_source_stats`` table (populated by the stats poller).
+    Zero dependency on graph provider connectivity.
+    """
+    import json
+    from backend.app.db.repositories.stats_repo import get_data_source_stats
+
+    # Verify the data source belongs to this workspace
+    ds = await data_source_repo.get_data_source_orm(session, ds_id)
+    if not ds or ds.workspace_id != workspace_id:
+        raise HTTPException(status_code=404, detail=f"Data source '{ds_id}' not found in workspace '{workspace_id}'")
+
+    stats = await get_data_source_stats(session, ds_id)
+    if stats and stats.ontology_metadata and stats.ontology_metadata != "{}":
+        return json.loads(stats.ontology_metadata)
+
+    raise HTTPException(status_code=404, detail="No cached ontology metadata available yet — the stats poller may not have run.")
