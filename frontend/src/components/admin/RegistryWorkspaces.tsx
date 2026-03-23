@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { fetchWithTimeout } from '@/services/fetchWithTimeout'
 import { useNavigate } from 'react-router-dom'
 import {
     Database, Plus, Edit2, Settings, Loader2, Search, AlertTriangle,
@@ -40,7 +41,7 @@ export function RegistryWorkspaces() {
                 let totalNodes = 0, totalEdges = 0, allTypes = new Set<string>()
                 const dsPromises = (ws.dataSources || []).map(async (ds) => {
                     try {
-                        const res = await fetch(`/api/v1/admin/workspaces/${ws.id}/datasources/${ds.id}/cached-stats`)
+                        const res = await fetchWithTimeout(`/api/v1/admin/workspaces/${ws.id}/datasources/${ds.id}/cached-stats`)
                         if (res.ok) {
                             const data = await res.json()
                             totalNodes += (data.nodeCount ?? 0)

@@ -2,6 +2,7 @@
  * Shared utilities for ontology features.
  */
 import type { GraphSchemaStats } from '@/providers/GraphDataProvider'
+import { fetchWithTimeout } from '@/services/fetchWithTimeout'
 
 /**
  * Fetch graph schema stats for an arbitrary workspace/data-source combination.
@@ -15,7 +16,7 @@ export async function fetchSchemaStats(
   // 1. Try DB cache first (no provider needed)
   if (dataSourceId) {
     try {
-      const res = await fetch(`/api/v1/admin/workspaces/${workspaceId}/datasources/${dataSourceId}/cached-stats`)
+      const res = await fetchWithTimeout(`/api/v1/admin/workspaces/${workspaceId}/datasources/${dataSourceId}/cached-stats`)
       if (res.ok) {
         const data = await res.json()
         if (data.schemaStats) {

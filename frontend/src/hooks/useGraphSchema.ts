@@ -14,6 +14,7 @@ import { useGraphProvider, useGraphProviderContext } from '@/providers/GraphProv
 import { useSchemaStore } from '@/store/schema'
 import { defaultWorkspaceSchema } from '@/lib/default-schema'
 import type { GraphSchema } from '@/providers/GraphDataProvider'
+import { fetchWithTimeout } from '@/services/fetchWithTimeout'
 
 export const GRAPH_SCHEMA_QUERY_KEY = ['graph', 'schema'] as const
 
@@ -24,7 +25,7 @@ export const GRAPH_SCHEMA_QUERY_KEY = ['graph', 'schema'] as const
 async function fetchCachedSchema(workspaceId?: string, dataSourceId?: string): Promise<GraphSchema | null> {
   if (!workspaceId || !dataSourceId) return null
   try {
-    const res = await fetch(`/api/v1/admin/workspaces/${workspaceId}/datasources/${dataSourceId}/cached-schema`)
+    const res = await fetchWithTimeout(`/api/v1/admin/workspaces/${workspaceId}/datasources/${dataSourceId}/cached-schema`)
     if (!res.ok) return null
     return await res.json() as GraphSchema
   } catch {

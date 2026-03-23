@@ -108,7 +108,7 @@ export class RemoteGraphProvider implements GraphDataProvider {
 
     private async _doFetch<T>(url: string, fetchOptions: RequestInit, method: string, cacheKey: string): Promise<T> {
         const controller = new AbortController()
-        const timer = setTimeout(() => controller.abort(), 25_000)
+        const timer = setTimeout(() => controller.abort(), 10_000)
         try {
             const response = await fetch(url, {
                 ...fetchOptions,

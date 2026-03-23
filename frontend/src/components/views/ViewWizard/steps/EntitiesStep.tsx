@@ -9,6 +9,7 @@
  */
 
 import { useState, useMemo, useCallback, useEffect } from 'react'
+import { fetchWithTimeout } from '@/services/fetchWithTimeout'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
     Search,
@@ -78,7 +79,7 @@ export function EntitiesStep({ formData, updateFormData, dataSourceId }: Entitie
                 // 1. Try cached stats from management DB (no provider dependency)
                 if (workspaceId && dataSourceId) {
                     try {
-                        const res = await fetch(`/api/v1/admin/workspaces/${workspaceId}/datasources/${dataSourceId}/cached-stats`)
+                        const res = await fetchWithTimeout(`/api/v1/admin/workspaces/${workspaceId}/datasources/${dataSourceId}/cached-stats`)
                         if (res.ok) {
                             const data = await res.json()
                             if (data.schemaStats) schemaStats = data.schemaStats as GraphSchemaStats

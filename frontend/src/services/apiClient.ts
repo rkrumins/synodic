@@ -19,7 +19,7 @@ export async function authFetch<T>(url: string, init?: RequestInit): Promise<T> 
     }
 
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 20_000)
+    const timer = setTimeout(() => controller.abort(), 8_000)
 
     let res: Response
     try {
