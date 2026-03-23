@@ -123,19 +123,20 @@ export function AdminWorkspaceDetail() {
             setEditDesc(ws.description || '')
 
             const stats: Record<string, DataSourceStats> = {}
-            for (const ds of ws.dataSources || []) {
+            // Fetch cached stats from management DB (no provider dependency) in parallel
+            await Promise.all((ws.dataSources || []).map(async (ds) => {
                 try {
-                    const res = await fetch(`/api/v1/${ws.id}/graph/stats?dataSourceId=${ds.id}`)
+                    const res = await fetch(`/api/v1/admin/workspaces/${ws.id}/datasources/${ds.id}/cached-stats`)
                     if (res.ok) {
                         const data = await res.json()
                         stats[ds.id] = {
-                            nodeCount: data.node_count ?? data.nodeCount ?? 0,
-                            edgeCount: data.edge_count ?? data.edgeCount ?? 0,
-                            entityTypes: data.entity_types ?? data.entityTypes ?? [],
+                            nodeCount: data.nodeCount ?? 0,
+                            edgeCount: data.edgeCount ?? 0,
+                            entityTypes: Object.keys(data.entityTypeCounts ?? {}),
                         }
                     }
-                } catch { /* ignore */ }
-            }
+                } catch { /* no cached stats yet */ }
+            }))
             setDsStatsMap(stats)
         } catch (err) {
             console.error('Failed to load workspace', err)
