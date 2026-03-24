@@ -119,27 +119,55 @@ export function TopBar({ onOpenCommandPalette }: TopBarProps) {
         {/* User Menu */}
         <DropdownMenu.Root>
           <DropdownMenu.Trigger asChild>
-            <button className={cn(
-              "w-8 h-8 rounded-full bg-accent-lineage/20 flex items-center justify-center",
-              "hover:bg-accent-lineage/30 transition-colors outline-none focus:ring-2 focus:ring-accent-lineage/40"
-            )}>
-              <User className="w-4 h-4 text-accent-lineage" />
+            <button
+              className={cn(
+                "w-8 h-8 rounded-full flex items-center justify-center",
+                "bg-accent-lineage/20 hover:bg-accent-lineage/30",
+                "transition-colors outline-none focus:ring-2 focus:ring-accent-lineage/40"
+              )}
+              aria-label="User menu"
+            >
+              {user ? (
+                <span className="text-xs font-semibold text-accent-lineage select-none leading-none">
+                  {(user.firstName?.[0] ?? '').toUpperCase()}{(user.lastName?.[0] ?? '').toUpperCase()}
+                </span>
+              ) : (
+                <User className="w-4 h-4 text-accent-lineage" />
+              )}
             </button>
           </DropdownMenu.Trigger>
 
           <DropdownMenu.Portal>
             <DropdownMenu.Content
-              className="min-w-[200px] bg-canvas-elevated border border-glass-border rounded-xl shadow-xl p-2 z-50 animate-in fade-in zoom-in-95 data-[side=bottom]:slide-in-from-top-2"
+              className="min-w-[220px] bg-canvas-elevated border border-glass-border rounded-xl shadow-xl p-2 z-50 animate-in fade-in zoom-in-95 data-[side=bottom]:slide-in-from-top-2"
               sideOffset={8}
               align="end"
             >
-              <div className="px-3 py-2 border-b border-glass-border mb-1">
-                <p className="text-xs font-semibold text-ink">
-                  {user?.name || 'Admin User'}
-                </p>
-                <p className="text-[10px] text-ink-muted capitalize">
-                  {user?.role || 'Administrator'}
-                </p>
+              <div className="flex items-center gap-3 px-3 py-2.5 border-b border-glass-border mb-1">
+                <div className={cn(
+                  "w-9 h-9 rounded-full flex items-center justify-center shrink-0",
+                  "bg-accent-lineage/15"
+                )}>
+                  <span className="text-sm font-semibold text-accent-lineage select-none leading-none">
+                    {user ? `${(user.firstName?.[0] ?? '').toUpperCase()}${(user.lastName?.[0] ?? '').toUpperCase()}` : '?'}
+                  </span>
+                </div>
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-ink truncate">
+                    {user?.displayName || [user?.firstName, user?.lastName].filter(Boolean).join(' ') || 'Unknown User'}
+                  </p>
+                  <p className="text-xs text-ink-muted truncate">
+                    {user?.email}
+                  </p>
+                  <span className={cn(
+                    "inline-block mt-0.5 px-1.5 py-px rounded text-[10px] font-medium capitalize",
+                    user?.role === 'admin'
+                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                      : 'bg-accent-lineage/10 text-accent-lineage'
+                  )}>
+                    {user?.role || 'user'}
+                  </span>
+                </div>
               </div>
 
               <DropdownMenu.Item
