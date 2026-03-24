@@ -14,6 +14,7 @@ export interface SignUpRequest {
     password: string
     firstName: string
     lastName: string
+    inviteToken?: string
 }
 
 export interface LoginRequest {
@@ -93,5 +94,11 @@ export const authService = {
             method: 'POST',
             body: JSON.stringify({ token, newPassword }),
         })
+    },
+
+    verifyInvite(token: string): Promise<{ valid: boolean; role: string | null }> {
+        return request<{ valid: boolean; role: string | null }>(
+            `${AUTH_API}/verify-invite?token=${encodeURIComponent(token)}`,
+        )
     },
 }
