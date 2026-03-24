@@ -24,7 +24,7 @@ import { getView, viewToViewConfig, type View } from '@/services/viewApiService'
 import { switchToViewScope, parseDataSourceId, type ScopeSwitchResult } from '@/utils/viewNavigation'
 import type { ViewConfiguration } from '@/types/schema'
 
-const LOADING_SCHEMA_TIMEOUT_MS = 10_000
+const LOADING_SCHEMA_TIMEOUT_MS = 8_000
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -71,6 +71,9 @@ export function useViewNavigation(viewId: string | undefined): UseViewNavigation
   const switchProviderVersionRef = useRef<number>(providerVersion)
   // Cancellation for API fetches
   const cancelledRef = useRef(false)
+  // Ref-tracked status for health recovery subscription (avoids stale closure)
+  const statusRef = useRef<ViewNavigationStatus>(status)
+  statusRef.current = status
 
   // ─── Step 1: Resolve view & switch scope ──────────────────────────────
 
@@ -255,7 +258,7 @@ export function useViewNavigation(viewId: string | undefined): UseViewNavigation
       const wasDown = prev.status === 'unreachable' || prev.status === 'degraded'
       const isBack = state.status === 'recovered' || (state.status === 'healthy' && wasDown)
       if (!isBack) return
-      if (status !== 'error') return // only retry if we're currently in error
+      if (statusRef.current !== 'error') return // only retry if we're currently in error
 
       // Reset so Step 1 effect re-runs with fresh retryCount
       completedViewRef.current = null
@@ -263,7 +266,7 @@ export function useViewNavigation(viewId: string | undefined): UseViewNavigation
       setRetryCount(c => c + 1)
     })
     return unsubscribe
-  }, [status])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   return {
     status,

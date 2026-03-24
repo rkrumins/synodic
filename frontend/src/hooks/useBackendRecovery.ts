@@ -20,6 +20,7 @@ import { useConnectionsStore } from '@/store/connections'
 import { useSchemaStore } from '@/store/schema'
 import { listViews, viewToViewConfig } from '@/services/viewApiService'
 import { GRAPH_SCHEMA_QUERY_KEY } from '@/hooks/useGraphSchema'
+import { resetAllCircuitBreakers } from '@/services/circuitBreaker'
 
 export function useBackendRecovery() {
   const queryClient = useQueryClient()
@@ -38,6 +39,9 @@ export function useBackendRecovery() {
       if (!isBack) return
 
       console.info('[useBackendRecovery] Backend recovered — reloading data')
+
+      // Reset all circuit breakers so providers can be probed immediately
+      resetAllCircuitBreakers()
 
       // Re-fetch workspaces + connections (drives provider rebuild)
       useWorkspacesStore.getState().loadWorkspaces()

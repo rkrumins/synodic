@@ -8,12 +8,14 @@
  * Refactored from AppShell + App.tsx to support route-based navigation.
  */
 import { useEffect, useState, createContext, useContext } from 'react'
-import { Outlet, Navigate } from 'react-router-dom'
+import { Outlet, Navigate, useNavigate } from 'react-router-dom'
+import { AlertTriangle, Home } from 'lucide-react'
 import { TopBar } from './TopBar'
 import { GlobalAnnouncementBanner } from './GlobalAnnouncementBanner'
 import { SidebarNav } from './SidebarNav'
 import { CommandPalette } from './CommandPalette'
 import { ViewWizard } from '@/components/views/ViewWizard'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { useAuthStore } from '@/store/auth'
 import { usePreferencesStore } from '@/store/preferences'
 import { useSchemaStore } from '@/store/schema'
@@ -116,7 +118,14 @@ export function AppLayout() {
           <main
             className="flex-1 relative overflow-hidden transition-all duration-300"
           >
-            <Outlet />
+            <ErrorBoundary
+              resetKeys={[activeWorkspaceId]}
+              fallback={(error, reset) => (
+                <PageError error={error} onReset={reset} />
+              )}
+            >
+              <Outlet />
+            </ErrorBoundary>
           </main>
         </div>
 
@@ -134,5 +143,35 @@ export function AppLayout() {
         />
       </div>
     </ViewEditorContext.Provider>
+  )
+}
+
+function PageError({ error, onReset }: { error: Error; onReset: () => void }) {
+  const navigate = useNavigate()
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-canvas">
+      <div className="flex flex-col items-center gap-4 max-w-lg text-center">
+        <div className="w-14 h-14 rounded-full bg-red-100 dark:bg-red-950/40 flex items-center justify-center">
+          <AlertTriangle className="w-7 h-7 text-red-500" />
+        </div>
+        <h2 className="text-xl font-semibold text-ink">Something went wrong</h2>
+        <p className="text-sm text-ink-muted">{error.message}</p>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onReset}
+            className="px-4 py-2 rounded-lg bg-surface-elevated border border-border text-sm font-medium text-ink hover:bg-surface-hover transition-colors"
+          >
+            Try again
+          </button>
+          <button
+            onClick={() => { onReset(); navigate('/dashboard') }}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-lineage text-white text-sm font-medium hover:bg-accent-lineage/90 transition-colors"
+          >
+            <Home className="w-4 h-4" />
+            Dashboard
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }

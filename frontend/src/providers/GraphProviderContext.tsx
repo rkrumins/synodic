@@ -180,7 +180,12 @@ export function GraphProvider({ children }: GraphProviderProps) {
             setError(null)
             setProviderReady(false)
             currentProvider.getStats()
-                .then(() => setProviderReady(true))
+                .then(() => {
+                    setProviderReady(true)
+                    // Increment providerVersion so canvas hooks (useGraphHydration)
+                    // detect the recovery and re-hydrate with fresh data.
+                    setProviderVersion(v => v + 1)
+                })
                 .catch((err) => {
                     setError(err instanceof Error ? err : new Error('Provider still unreachable'))
                     setProviderReady(true)
